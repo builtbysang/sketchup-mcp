@@ -2,149 +2,213 @@ require 'sketchup'
 require 'json'
 require 'socket'
 require 'fileutils'
-
-puts "MCP Extension loading..."
-SKETCHUP_CONSOLE.show rescue nil
+require 'tmpdir'
 
 module SU_MCP
+  # Tools that change the model. Each of these runs inside a single
+  # start_operation/commit_operation pair so one MCP call == one undo step.
+  MUTATING_TOOLS = %w[
+    create_component delete_component transform_component set_material
+    boolean_operation chamfer_edges fillet_edges
+    create_mortise_tenon create_dovetail create_finger_joint
+    eval_ruby
+  ].freeze
+
   class Server
-    def initialize
-      @port = 9876
-      @server = nil
+    DEFAULT_PORT   = 9876
+    MAX_LINE_BYTES = 8 * 1024 * 1024 # guard against a client that never sends \n
+
+    def initialize(port: nil)
+      @host    = ENV['SKETCHUP_MCP_HOST'] || '127.0.0.1'
+      @port    = (port || ENV['SKETCHUP_MCP_PORT'] || DEFAULT_PORT).to_i
+      @server  = nil
       @running = false
       @timer_id = nil
-      
-      # Try multiple ways to show console
-      begin
-        SKETCHUP_CONSOLE.show
-      rescue
-        begin
-          Sketchup.send_action("showRubyPanel:")
-        rescue
-          UI.start_timer(0) { SKETCHUP_CONSOLE.show }
-        end
-      end
+      @clients = {} # socket => read buffer
+      @debug   = !ENV['SKETCHUP_MCP_DEBUG'].to_s.empty?
+      show_console if @debug
     end
 
     def log(msg)
-      begin
-        SKETCHUP_CONSOLE.write("MCP: #{msg}\n")
-      rescue
-        puts "MCP: #{msg}"
-      end
-      STDOUT.flush
+      SKETCHUP_CONSOLE.write("MCP: #{msg}\n")
+    rescue StandardError
+      puts "MCP: #{msg}"
+    end
+
+    def debug(msg)
+      log(msg) if @debug
+    end
+
+    def running?
+      @running
     end
 
     def start
-      return if @running
-      
+      if @running
+        log "Server already running on #{@host}:#{@port}"
+        return
+      end
+
       begin
-        log "Starting server on localhost:#{@port}..."
-        
-        @server = TCPServer.new('127.0.0.1', @port)
-        log "Server created on port #{@port}"
-        
+        log "Starting server on #{@host}:#{@port}..."
+        @server  = TCPServer.new(@host, @port)
+        @clients = {}
         @running = true
-        
-        @timer_id = UI.start_timer(0.1, true) {
-          begin
-            if @running
-              # Check for connection
-              ready = IO.select([@server], nil, nil, 0)
-              if ready
-                log "Connection waiting..."
-                client = @server.accept_nonblock
-                log "Client accepted"
-                
-                data = client.gets
-                log "Raw data: #{data.inspect}"
-                
-                if data
-                  begin
-                    # Parse the raw JSON first to check format
-                    raw_request = JSON.parse(data)
-                    log "Raw parsed request: #{raw_request.inspect}"
-                    
-                    # Extract the original request ID if it exists in the raw data
-                    original_id = nil
-                    if data =~ /"id":\s*(\d+)/
-                      original_id = $1.to_i
-                      log "Found original request ID: #{original_id}"
-                    end
-                    
-                    # Use the raw request directly without transforming it
-                    # Just ensure the ID is preserved if it exists
-                    request = raw_request
-                    if !request["id"] && original_id
-                      request["id"] = original_id
-                      log "Added missing ID: #{original_id}"
-                    end
-                    
-                    log "Processed request: #{request.inspect}"
-                    response = handle_jsonrpc_request(request)
-                    response_json = response.to_json + "\n"
-                    
-                    log "Sending response: #{response_json.strip}"
-                    client.write(response_json)
-                    client.flush
-                    log "Response sent"
-                  rescue JSON::ParserError => e
-                    log "JSON parse error: #{e.message}"
-                    error_response = {
-                      jsonrpc: "2.0",
-                      error: { code: -32700, message: "Parse error" },
-                      id: original_id
-                    }.to_json + "\n"
-                    client.write(error_response)
-                    client.flush
-                  rescue StandardError => e
-                    log "Request error: #{e.message}"
-                    error_response = {
-                      jsonrpc: "2.0",
-                      error: { code: -32603, message: e.message },
-                      id: request ? request["id"] : original_id
-                    }.to_json + "\n"
-                    client.write(error_response)
-                    client.flush
-                  end
-                end
-                
-                client.close
-                log "Client closed"
-              end
-            end
-          rescue IO::WaitReadable
-            # Normal for accept_nonblock
-          rescue StandardError => e
-            log "Timer error: #{e.message}"
-            log e.backtrace.join("\n")
-          end
-        }
-        
-        log "Server started and listening"
-        
+
+        @timer_id = UI.start_timer(0.1, true) { poll }
+
+        log "Server listening on #{@host}:#{@port}"
       rescue StandardError => e
-        log "Error: #{e.message}"
+        log "Error starting server: #{e.message}"
         log e.backtrace.join("\n")
         stop
       end
     end
 
     def stop
+      return unless @running || @server || @timer_id
+
       log "Stopping server..."
       @running = false
-      
+
       if @timer_id
         UI.stop_timer(@timer_id)
         @timer_id = nil
       end
-      
-      @server.close if @server
+
+      @clients.each_key { |client| close_socket(client) }
+      @clients = {}
+
+      close_socket(@server) if @server
       @server = nil
       log "Server stopped"
     end
 
     private
+
+    # Only forced open in debug mode. The extension used to pop the Ruby
+    # Console on every SketchUp launch and then spam it with raw payloads.
+    def show_console
+      SKETCHUP_CONSOLE.show
+    rescue StandardError
+      begin
+        Sketchup.send_action("showRubyPanel:")
+      rescue StandardError
+        nil
+      end
+    end
+
+    # Runs on SketchUp's main thread every 0.1s, so nothing in here may block.
+    # The old loop called client.gets — a blocking read that froze the whole UI
+    # whenever a client connected without immediately sending a full line.
+    def poll
+      return unless @running
+
+      accept_pending
+      @clients.keys.each { |client| service(client) }
+    rescue StandardError => e
+      log "Poll error: #{e.message}"
+      log e.backtrace.join("\n")
+    end
+
+    def accept_pending
+      loop do
+        client = @server.accept_nonblock
+        client.sync = true if client.respond_to?(:sync=)
+        @clients[client] = String.new
+        debug "Client connected (#{@clients.size} open)"
+      end
+    rescue IO::WaitReadable, Errno::EAGAIN, Errno::EWOULDBLOCK
+      # nothing else pending this tick
+    rescue StandardError => e
+      log "Accept error: #{e.message}"
+    end
+
+    def service(client)
+      buffer = @clients[client]
+      return unless buffer
+
+      loop { buffer << client.read_nonblock(65_536) }
+    rescue IO::WaitReadable, Errno::EAGAIN, Errno::EWOULDBLOCK
+      drain_lines(client, buffer)
+    rescue EOFError
+      drain_lines(client, buffer)
+      drop(client, "closed the connection")
+    rescue Errno::ECONNRESET, Errno::EPIPE, IOError
+      drop(client, "reset the connection")
+    rescue StandardError => e
+      log "Read error: #{e.message}"
+      drop(client, "read error")
+    end
+
+    def drain_lines(client, buffer)
+      while (idx = buffer.index("\n"))
+        line = buffer.slice!(0, idx + 1).strip
+        handle_line(client, line) unless line.empty?
+        return unless @clients.key?(client)
+      end
+
+      return unless buffer.bytesize > MAX_LINE_BYTES
+
+      log "Request exceeded #{MAX_LINE_BYTES} bytes with no newline"
+      drop(client, "oversized request")
+    end
+
+    def handle_line(client, line)
+      debug "-> #{truncate(line)}"
+
+      request = nil
+      response =
+        begin
+          request = JSON.parse(line)
+          handle_jsonrpc_request(request)
+        rescue JSON::ParserError => e
+          log "JSON parse error: #{e.message}"
+          error_response(nil, -32700, "Parse error")
+        rescue StandardError => e
+          log "Request error: #{e.message}"
+          log e.backtrace.join("\n")
+          error_response(request && request["id"], -32603, e.message)
+        end
+
+      write_response(client, response)
+    end
+
+    # The connection stays open across requests: the Python side keeps one
+    # persistent socket, and closing after every response is what desynced it.
+    def write_response(client, response)
+      payload = response.to_json + "\n"
+      debug "<- #{truncate(payload)}"
+      client.write(payload)
+      client.flush
+    rescue Errno::EPIPE, Errno::ECONNRESET, IOError => e
+      drop(client, "write failed: #{e.message}")
+    end
+
+    def drop(client, reason)
+      return unless @clients.delete(client)
+
+      close_socket(client)
+      debug "Client #{reason} (#{@clients.size} open)"
+    end
+
+    def close_socket(socket)
+      socket.close
+    rescue StandardError
+      nil
+    end
+
+    def truncate(str, limit = 500)
+      str.length > limit ? "#{str[0, limit]}... (#{str.length} chars)" : str
+    end
+
+    def error_response(id, code, message)
+      {
+        jsonrpc: "2.0",
+        error: { code: code, message: message, data: { success: false } },
+        id: id
+      }
+    end
 
     def handle_jsonrpc_request(request)
       log "Handling JSONRPC request: #{request.inspect}"
