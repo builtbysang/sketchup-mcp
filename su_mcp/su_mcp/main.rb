@@ -17,6 +17,10 @@ module SU_MCP
   class Server
     DEFAULT_PORT   = 9876
     MAX_LINE_BYTES = 8 * 1024 * 1024 # guard against a client that never sends \n
+    # Text results are clamped before they ever hit the socket: an unbounded
+    # eval_ruby return value otherwise burns the caller's whole context window.
+    MAX_RESULT_CHARS = (ENV['SKETCHUP_MCP_MAX_CHARS'] || 4000).to_i
+    MAX_LIST_ITEMS   = (ENV['SKETCHUP_MCP_MAX_ITEMS'] || 100).to_i
 
     def initialize(port: nil)
       @host    = ENV['SKETCHUP_MCP_HOST'] || '127.0.0.1'
@@ -198,6 +202,12 @@ module SU_MCP
       nil
     end
 
+    def clamp(str, limit = MAX_RESULT_CHARS)
+      return str if limit <= 0 || str.length <= limit
+
+      "#{str[0, limit]}\n... [truncated #{str.length - limit} of #{str.length} chars]"
+    end
+
     def truncate(str, limit = 500)
       str.length > limit ? "#{str[0, limit]}... (#{str.length} chars)" : str
     end
@@ -211,55 +221,37 @@ module SU_MCP
     end
 
     def handle_jsonrpc_request(request)
-      log "Handling JSONRPC request: #{request.inspect}"
-      
-      # Handle direct command format (for backward compatibility)
+      debug "method=#{request["method"] || request["command"]}"
+
+      # Direct { "command": ..., "parameters": ... } form, kept for compatibility.
       if request["command"]
-        tool_request = {
-          "method" => "tools/call",
-          "params" => {
-            "name" => request["command"],
-            "arguments" => request["parameters"]
-          },
+        return handle_tool_call(
           "jsonrpc" => request["jsonrpc"] || "2.0",
-          "id" => request["id"]
-        }
-        log "Converting to tool request: #{tool_request.inspect}"
-        return handle_tool_call(tool_request)
+          "method"  => "tools/call",
+          "params"  => { "name" => request["command"], "arguments" => request["parameters"] },
+          "id"      => request["id"]
+        )
       end
 
-      # Handle jsonrpc format
       case request["method"]
       when "tools/call"
         handle_tool_call(request)
+      when "ping"
+        { jsonrpc: request["jsonrpc"] || "2.0", result: { ok: true }, id: request["id"] }
       when "resources/list"
         {
           jsonrpc: request["jsonrpc"] || "2.0",
-          result: { 
-            resources: list_resources,
-            success: true
-          },
+          result: { resources: list_resources, success: true },
           id: request["id"]
         }
       when "prompts/list"
         {
           jsonrpc: request["jsonrpc"] || "2.0",
-          result: { 
-            prompts: [],
-            success: true
-          },
+          result: { prompts: [], success: true },
           id: request["id"]
         }
       else
-        {
-          jsonrpc: request["jsonrpc"] || "2.0",
-          error: { 
-            code: -32601, 
-            message: "Method not found",
-            data: { success: false }
-          },
-          id: request["id"]
-        }
+        error_response(request["id"], -32601, "Method not found: #{request["method"]}")
       end
     end
 
@@ -267,92 +259,92 @@ module SU_MCP
       model = Sketchup.active_model
       return [] unless model
       
-      model.entities.map do |entity|
-        {
-          id: entity.entityID,
-          type: entity.typename.downcase
-        }
+      model.entities.first(MAX_LIST_ITEMS).map do |entity|
+        { id: entity.entityID, type: entity.typename.downcase }
       end
     end
 
     def handle_tool_call(request)
-      log "Handling tool call: #{request.inspect}"
-      tool_name = request["params"]["name"]
-      args = request["params"]["arguments"]
+      params    = request["params"] || {}
+      tool_name = params["name"]
+      args      = params["arguments"] || {}
+      debug "tool=#{tool_name} args=#{truncate(args.inspect)}"
 
       begin
-        result = case tool_name
-        when "create_component"
-          create_component(args)
-        when "delete_component"
-          delete_component(args)
-        when "transform_component"
-          transform_component(args)
-        when "get_selection"
-          get_selection
-        when "export", "export_scene"
-          export_scene(args)
-        when "set_material"
-          set_material(args)
-        when "boolean_operation"
-          boolean_operation(args)
-        when "chamfer_edges"
-          chamfer_edges(args)
-        when "fillet_edges"
-          fillet_edges(args)
-        when "create_mortise_tenon"
-          create_mortise_tenon(args)
-        when "create_dovetail"
-          create_dovetail(args)
-        when "create_finger_joint"
-          create_finger_joint(args)
-        when "eval_ruby"
-          eval_ruby(args)
-        else
-          raise "Unknown tool: #{tool_name}"
-        end
+        result = with_operation(tool_name) { dispatch_tool(tool_name, args) }
+        raise "Tool #{tool_name} reported failure" unless result.is_a?(Hash) && result[:success]
 
-        log "Tool call result: #{result.inspect}"
-        if result[:success]
-          response = {
-            jsonrpc: request["jsonrpc"] || "2.0",
-            result: {
-              content: [{ type: "text", text: result[:result] || "Success" }],
-              isError: false,
-              success: true,
-              resourceId: result[:id]
-            },
-            id: request["id"]
-          }
-          log "Sending success response: #{response.inspect}"
-          response
-        else
-          response = {
-            jsonrpc: request["jsonrpc"] || "2.0",
-            error: { 
-              code: -32603, 
-              message: "Operation failed",
-              data: { success: false }
-            },
-            id: request["id"]
-          }
-          log "Sending error response: #{response.inspect}"
-          response
-        end
-      rescue StandardError => e
-        log "Tool call error: #{e.message}"
-        response = {
+        {
           jsonrpc: request["jsonrpc"] || "2.0",
-          error: { 
-            code: -32603, 
-            message: e.message,
-            data: { success: false }
+          result: {
+            content: [{ type: "text", text: result_text(result) }],
+            isError: false,
+            success: true,
+            resourceId: result[:id]
           },
           id: request["id"]
         }
-        log "Sending error response: #{response.inspect}"
-        response
+      rescue StandardError => e
+        log "Tool error (#{tool_name}): #{e.message}"
+        debug e.backtrace.join("\n")
+        error_response(request["id"], -32603, e.message)
       end
+    end
+
+    def dispatch_tool(tool_name, args)
+      case tool_name
+      when "create_component"     then create_component(args)
+      when "delete_component"     then delete_component(args)
+      when "transform_component"  then transform_component(args)
+      when "get_selection", "get_selected_components" then get_selection
+      when "get_scene_info"       then get_scene_info
+      when "export", "export_scene" then export_scene(args)
+      when "set_material"         then set_material(args)
+      when "boolean_operation"    then boolean_operation(args)
+      when "chamfer_edges"        then chamfer_edges(args)
+      when "fillet_edges"         then fillet_edges(args)
+      when "create_mortise_tenon" then create_mortise_tenon(args)
+      when "create_dovetail"      then create_dovetail(args)
+      when "create_finger_joint"  then create_finger_joint(args)
+      when "eval_ruby"            then eval_ruby(args)
+      else
+        raise "Unknown tool: #{tool_name}"
+      end
+    end
+
+    # One MCP call == one undo step. Without this, every add_face/pushpull lands
+    # as its own entry and a generated model cannot be undone in one go; a
+    # failure halfway through also left the partial geometry behind.
+    def with_operation(tool_name)
+      return yield unless MUTATING_TOOLS.include?(tool_name)
+
+      model = Sketchup.active_model
+      raise "No active model" unless model
+
+      model.start_operation("MCP: #{tool_name}", true)
+      begin
+        result = yield
+        model.commit_operation
+        result
+      rescue StandardError
+        begin
+          model.abort_operation
+        rescue StandardError => abort_error
+          log "abort_operation failed: #{abort_error.message}"
+        end
+        raise
+      end
+    end
+
+    # Everything a tool returned (minus the :success flag) reaches the client.
+    # The old code forwarded only result[:result], so get_selection dropped its
+    # entity list and export_scene dropped the path it had just written.
+    def result_text(result)
+      payload = result.reject { |key, _| key == :success }
+      return "Success" if payload.empty?
+      return clamp(payload[:result].to_s) if payload.keys == [:result]
+
+      payload.to_json
     end
 
     def create_component(params)
