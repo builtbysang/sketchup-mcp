@@ -14,8 +14,9 @@ end
 
 load File.expand_path("../su_mcp/su_mcp/main.rb", __dir__)
 
-server = SU_MCP::Server.new
-server.start
+# Drive the same instance the menu commands close over, through the menu.
+server = SU_MCP.instance_variable_get(:@server)
+UI.menu("Plugins")["Start Server"].invoke
 
 failures = []
 def check(failures, label, cond, detail = nil)
@@ -141,8 +142,32 @@ r = send_req.call({ "jsonrpc" => "2.0", "method" => "tools/call",
                     "params" => { "name" => "nope", "arguments" => {} }, "id" => 12 })
 check(failures, "unknown tool -> error, no crash", r["error"] && r["error"]["message"].include?("Unknown tool"), r.inspect)
 
+puts "\n[12] menu reflects state without opening a dialog"
+menu = UI.menu("Plugins")
+start_item = menu["Start Server"]
+stop_item  = menu["Stop Server"]
+auto_item  = menu["Start on Launch"]
+check(failures, "menu items registered", [start_item, stop_item, auto_item].none?(&:nil?), menu.items.map(&:name).inspect)
+check(failures, "Start greys out while running", start_item.validate == MF_GRAYED, start_item.validate)
+check(failures, "Stop is available while running", stop_item.validate == MF_ENABLED, stop_item.validate)
+
+puts "\n[13] autostart preference persists and drives the checkmark"
+check(failures, "off by default", !SU_MCP.autostart? && auto_item.validate == MF_UNCHECKED, auto_item.validate)
+auto_item.invoke
+check(failures, "toggles on and is remembered", SU_MCP.autostart? && auto_item.validate == MF_CHECKED, auto_item.validate)
+check(failures, "written to SketchUp defaults", Sketchup.read_default("SU_MCP", "autostart", false) == true)
+auto_item.invoke
+check(failures, "toggles back off", !SU_MCP.autostart?, auto_item.validate)
+
+ENV['SKETCHUP_MCP_AUTOSTART'] = '1'
+check(failures, "env var forces autostart on", SU_MCP.autostart?)
+ENV.delete('SKETCHUP_MCP_AUTOSTART')
+
 sock.close
-server.stop
+UI.menu("Plugins")["Stop Server"].invoke
+
+check(failures, "Start becomes available once stopped", start_item.validate == MF_ENABLED, start_item.validate)
+check(failures, "Stop greys out once stopped", stop_item.validate == MF_GRAYED, stop_item.validate)
 
 puts "\n#{failures.empty? ? "ALL RUBY CHECKS PASSED" : "FAILED: #{failures.join(', ')}"}"
 exit(failures.empty? ? 0 : 1)

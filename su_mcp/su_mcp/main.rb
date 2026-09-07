@@ -1939,19 +1939,40 @@ module SU_MCP
     end
   end
 
+  PREFS_SECTION = "SU_MCP".freeze
+
+  # Forgetting to hit Start Server is the most common way this bridge "breaks":
+  # the client can only report a refused connection. Remember the choice instead.
+  def self.autostart?
+    return true unless ENV['SKETCHUP_MCP_AUTOSTART'].to_s.empty?
+
+    !!Sketchup.read_default(PREFS_SECTION, "autostart", false)
+  end
+
+  def self.autostart=(enabled)
+    Sketchup.write_default(PREFS_SECTION, "autostart", !!enabled)
+  end
+
   unless file_loaded?(__FILE__)
     @server = Server.new
-    
+
     menu = UI.menu("Plugins").add_submenu("MCP Server")
-    menu.add_item("Start Server") { @server.start }
-    menu.add_item("Stop Server") { @server.stop }
-    menu.add_item("Server Status") {
-      state = @server.running? ? "running" : "stopped"
-      UI.messagebox("SketchUp MCP server is #{state}.\n\n" \
-                    "Set SKETCHUP_MCP_DEBUG=1 before launching SketchUp to open " \
-                    "the Ruby Console and log every request.")
-    }
-    
+
+    start_command = UI::Command.new("Start Server") { @server.start }
+    start_command.set_validation_proc { @server.running? ? MF_GRAYED : MF_ENABLED }
+    menu.add_item(start_command)
+
+    stop_command = UI::Command.new("Stop Server") { @server.stop }
+    stop_command.set_validation_proc { @server.running? ? MF_ENABLED : MF_GRAYED }
+    menu.add_item(stop_command)
+
+    autostart_command = UI::Command.new("Start on Launch") { SU_MCP.autostart = !SU_MCP.autostart? }
+    autostart_command.set_validation_proc { SU_MCP.autostart? ? MF_CHECKED : MF_UNCHECKED }
+    menu.add_item(autostart_command)
+
+    # Deferred: extensions load before SketchUp has finished starting up.
+    UI.start_timer(0, false) { @server.start } if SU_MCP.autostart?
+
     file_loaded(__FILE__)
   end
 end 

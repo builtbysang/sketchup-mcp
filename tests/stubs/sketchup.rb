@@ -5,23 +5,51 @@ SKETCHUP_CONSOLE = Object.new
 def SKETCHUP_CONSOLE.show; end
 def SKETCHUP_CONSOLE.write(msg); $stderr.print(msg) if ENV['STUB_VERBOSE']; end
 
+MF_ENABLED   = 0
+MF_DISABLED  = 1
+MF_CHECKED   = 2
+MF_UNCHECKED = 3
+MF_GRAYED    = 4
+
 module UI
   @timers = {}
+  @menu = nil
   class << self
     attr_reader :timers
-    def start_timer(_interval, _repeat = false, &block)
+    def start_timer(_interval, repeat = false, &block)
       id = @timers.size + 1
-      @timers[id] = block
+      @timers[id] = { block: block, repeat: repeat }
       id
     end
     def stop_timer(id); @timers.delete(id); end
-    def tick!; @timers.values.each(&:call); end
-    def menu(_name); FakeMenu.new; end
+    def tick!
+      @timers.to_a.each do |id, timer|
+        @timers.delete(id) unless timer[:repeat]
+        timer[:block].call
+      end
+    end
+    def menu(_name); @menu ||= FakeMenu.new; end
     def messagebox(_msg); end
   end
+
+  class Command
+    attr_reader :name
+    def initialize(name, &block); @name = name; @block = block; end
+    def invoke; @block.call; end
+    def set_validation_proc(&block); @validation = block; self; end
+    def validate; @validation ? @validation.call : MF_ENABLED; end
+  end
+
   class FakeMenu
+    attr_reader :items
+    def initialize; @items = []; end
     def add_submenu(_n); self; end
-    def add_item(_n, &_b); self; end
+    def add_item(item, &block)
+      command = item.is_a?(Command) ? item : Command.new(item, &block)
+      @items << command
+      command
+    end
+    def [](name); @items.find { |c| c.name == name }; end
   end
 end
 
@@ -105,7 +133,15 @@ module Sketchup
   end
 
   @model = Model.new
+  @defaults = {}
   def self.active_model; @model; end
+  def self.read_default(section, key, fallback = nil)
+    @defaults.fetch("#{section}/#{key}", fallback)
+  end
+  def self.write_default(section, key, value)
+    @defaults["#{section}/#{key}"] = value
+    true
+  end
   def self.send_action(_a); end
   def self.require(_f); false; end
 end

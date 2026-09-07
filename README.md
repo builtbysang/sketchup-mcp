@@ -109,11 +109,16 @@ Every setting has a working default; both sides read the same environment.
 | `SKETCHUP_MCP_MAX_CHARS` | `4000` | Cap on a single tool result |
 | `SKETCHUP_MCP_MAX_ITEMS` | `100` | Cap on entity lists |
 | `SKETCHUP_MCP_EXPORT_DIR` | system temp | Where `export_scene` writes |
+| `SKETCHUP_MCP_AUTOSTART` | unset | Force the bridge to start on launch |
 | `SKETCHUP_MCP_DEBUG` | unset | Open the Ruby Console and log every request |
 
-The extension no longer forces the Ruby Console open; set `SKETCHUP_MCP_DEBUG=1`
-before launching SketchUp when you want the log. Extensions > MCP Server >
-Server Status reports whether the bridge is listening.
+Tick **Extensions > MCP Server > Start on Launch** once and the bridge comes up
+with SketchUp; the choice is remembered between sessions. Start and Stop grey
+themselves out according to what the server is actually doing, so the menu is
+also the status readout.
+
+The extension no longer forces the Ruby Console open. Set `SKETCHUP_MCP_DEBUG=1`
+before launching SketchUp when you want the log.
 
 ### Tests
 
