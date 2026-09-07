@@ -62,14 +62,63 @@ Once connected, Claude can interact with Sketchup using the following capabiliti
 
 #### Tools
 
-* `get_scene_info` - Gets information about the current Sketchup scene
-* `get_selected_components` - Gets information about currently selected components
-* `create_component` - Create a new component with specified parameters
-* `delete_component` - Remove a component from the scene
-* `transform_component` - Move, rotate, or scale a component
-* `set_material` - Apply materials to components
-* `export_scene` - Export the current scene to various formats
-* `eval_ruby` - Execute arbitrary Ruby code in SketchUp for advanced operations
+Inspection
+
+* `get_scene_info` - Model summary: counts, bounds, units, top-level entities. Ids
+  and names only by default; pass `detail=true` for bounding boxes, layers and
+  materials, and `limit` to cap the entity list.
+* `get_selection` - Ids and types of the current selection.
+
+Geometry
+
+* `create_component` - One primitive (`cube`, `cylinder`, `sphere`, `cone`).
+* `create_components` - Many primitives in a single round trip and a single undo
+  step. Prefer this over repeated `create_component` calls.
+* `delete_component` / `transform_component` / `set_material`
+* `boolean_operation` - `union`, `difference`, `intersection` between two groups.
+* `chamfer_edges` / `fillet_edges`
+
+Joinery
+
+* `create_mortise_tenon` / `create_dovetail` / `create_finger_joint`
+
+Escape hatch
+
+* `eval_ruby` - Run Ruby inside SketchUp. The cheapest way to build anything
+  non-trivial: one call can create a whole assembly as one undo step. Local
+  variables persist between calls, so you can keep a reference and reuse it
+  later instead of re-sending context.
+
+Output
+
+* `export_scene` - Export and return the path written. `skp`, `obj`, `dae`,
+  `stl`, `fbx`, `3ds`, `wrl`, `xsi`, `kmz`, `png`, `jpg`. Some exporters are
+  SketchUp Pro only and say so rather than failing silently.
+
+All geometry values are inches, whatever the model's display units.
+
+### Configuration
+
+Every setting has a working default; both sides read the same environment.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SKETCHUP_MCP_HOST` | `127.0.0.1` | Bind/connect address |
+| `SKETCHUP_MCP_PORT` | `9876` | Bridge port |
+| `SKETCHUP_MCP_TIMEOUT` | `60` | Seconds to wait for a reply (Python side) |
+| `SKETCHUP_MCP_MAX_CHARS` | `4000` | Cap on a single tool result |
+| `SKETCHUP_MCP_MAX_ITEMS` | `100` | Cap on entity lists |
+| `SKETCHUP_MCP_EXPORT_DIR` | system temp | Where `export_scene` writes |
+| `SKETCHUP_MCP_DEBUG` | unset | Open the Ruby Console and log every request |
+
+The extension no longer forces the Ruby Console open; set `SKETCHUP_MCP_DEBUG=1`
+before launching SketchUp when you want the log. Extensions > MCP Server >
+Server Status reports whether the bridge is listening.
+
+### Tests
+
+`ruby tests/test_extension.rb` and `python3 tests/test_transport.py` — neither
+needs SketchUp or an MCP client. See [tests/README.md](tests/README.md).
 
 ### Example Commands
 
@@ -84,9 +133,13 @@ Here are some examples of what you can ask Claude to do:
 
 ## Troubleshooting
 
-* **Connection issues**: Make sure both the Sketchup extension server and the MCP server are running
-* **Command failures**: Check the Ruby Console in Sketchup for error messages
-* **Timeout errors**: Try simplifying your requests or breaking them into smaller steps
+* **Connection issues**: Make sure the extension server is started
+  (Extensions > MCP Server > Start Server). The MCP server reconnects on its own.
+* **Command failures**: Run SketchUp with `SKETCHUP_MCP_DEBUG=1` and read the
+  Ruby Console.
+* **Timeout errors**: A timed-out request is *not* resent, because the extension
+  is not idempotent — a replayed `create_component` would build the shape twice.
+  Raise `SKETCHUP_MCP_TIMEOUT` for long operations instead of retrying.
 
 ## Technical Details
 
