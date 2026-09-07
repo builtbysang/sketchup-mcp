@@ -8,7 +8,7 @@ module SU_MCP
   # Tools that change the model. Each of these runs inside a single
   # start_operation/commit_operation pair so one MCP call == one undo step.
   MUTATING_TOOLS = %w[
-    create_component delete_component transform_component set_material
+    create_component create_components delete_component transform_component set_material
     boolean_operation chamfer_edges fillet_edges
     create_mortise_tenon create_dovetail create_finger_joint
     eval_ruby
@@ -294,10 +294,11 @@ module SU_MCP
     def dispatch_tool(tool_name, args)
       case tool_name
       when "create_component"     then create_component(args)
+      when "create_components"    then create_components(args)
       when "delete_component"     then delete_component(args)
       when "transform_component"  then transform_component(args)
       when "get_selection", "get_selected_components" then get_selection
-      when "get_scene_info"       then get_scene_info
+      when "get_scene_info"       then get_scene_info(args)
       when "export", "export_scene" then export_scene(args)
       when "set_material"         then set_material(args)
       when "boolean_operation"    then boolean_operation(args)
@@ -646,108 +647,148 @@ module SU_MCP
     end
     
     def export_scene(params)
-      log "Exporting scene with params: #{params.inspect}"
-      model = Sketchup.active_model
-      
-      format = params["format"] || "skp"
-      
-      begin
-        # Create a temporary directory for exports
-        temp_dir = File.join(ENV['TEMP'] || ENV['TMP'] || Dir.tmpdir, "sketchup_exports")
-        FileUtils.mkdir_p(temp_dir) unless Dir.exist?(temp_dir)
-        
-        # Generate a unique filename
-        timestamp = Time.now.strftime("%Y%m%d_%H%M%S")
-        filename = "sketchup_export_#{timestamp}"
-        
-        case format.downcase
-        when "skp"
-          # Export as SketchUp file
-          export_path = File.join(temp_dir, "#{filename}.skp")
-          log "Exporting to SketchUp file: #{export_path}"
-          model.save(export_path)
-          
-        when "obj"
-          # Export as OBJ file
-          export_path = File.join(temp_dir, "#{filename}.obj")
-          log "Exporting to OBJ file: #{export_path}"
-          
-          # Check if OBJ exporter is available
-          if Sketchup.require("sketchup.rb")
-            options = {
-              :triangulated_faces => true,
-              :double_sided_faces => true,
-              :edges => false,
-              :texture_maps => true
-            }
-            model.export(export_path, options)
-          else
-            raise "OBJ exporter not available"
-          end
-          
-        when "dae"
-          # Export as COLLADA file
-          export_path = File.join(temp_dir, "#{filename}.dae")
-          log "Exporting to COLLADA file: #{export_path}"
-          
-          # Check if COLLADA exporter is available
-          if Sketchup.require("sketchup.rb")
-            options = { :triangulated_faces => true }
-            model.export(export_path, options)
-          else
-            raise "COLLADA exporter not available"
-          end
-          
-        when "stl"
-          # Export as STL file
-          export_path = File.join(temp_dir, "#{filename}.stl")
-          log "Exporting to STL file: #{export_path}"
-          
-          # Check if STL exporter is available
-          if Sketchup.require("sketchup.rb")
-            options = { :units => "model" }
-            model.export(export_path, options)
-          else
-            raise "STL exporter not available"
-          end
-          
-        when "png", "jpg", "jpeg"
-          # Export as image
-          ext = format.downcase == "jpg" ? "jpeg" : format.downcase
-          export_path = File.join(temp_dir, "#{filename}.#{ext}")
-          log "Exporting to image file: #{export_path}"
-          
-          # Get the current view
-          view = model.active_view
-          
-          # Set up options for the export
-          options = {
-            :filename => export_path,
-            :width => params["width"] || 1920,
-            :height => params["height"] || 1080,
-            :antialias => true,
-            :transparent => (ext == "png")
-          }
-          
-          # Export the image
-          view.write_image(options)
-          
-        else
-          raise "Unsupported export format: #{format}"
+      model  = Sketchup.active_model
+      format = (params["format"] || "skp").to_s.downcase
+
+      temp_dir = File.join(export_dir, "sketchup_exports")
+      FileUtils.mkdir_p(temp_dir)
+      filename = "sketchup_export_#{Time.now.strftime('%Y%m%d_%H%M%S')}"
+
+      case format
+      when "skp"
+        export_path = File.join(temp_dir, "#{filename}.skp")
+        raise "Failed to save .skp to #{export_path}" unless model.save(export_path)
+
+      when "obj", "dae", "stl", "fbx", "3ds", "wrl", "xsi", "kmz"
+        export_path = File.join(temp_dir, "#{filename}.#{format}")
+        # model.export returns false when the exporter is missing — several of
+        # them ship with Pro only. The old guard called Sketchup.require, which
+        # returns false for an already-loaded file, so this branch always raised.
+        unless model.export(export_path, exporter_options(format))
+          raise "#{format.upcase} export failed - exporter not available in this SketchUp edition"
         end
-        
-        log "Export completed successfully to: #{export_path}"
-        
-        { 
-          success: true, 
-          path: export_path,
-          format: format
-        }
-      rescue StandardError => e
-        log "Error in export_scene: #{e.message}"
-        log e.backtrace.join("\n")
-        raise
+
+      when "png", "jpg", "jpeg"
+        ext = format == "jpg" ? "jpeg" : format
+        export_path = File.join(temp_dir, "#{filename}.#{ext}")
+        model.active_view.write_image(
+          :filename    => export_path,
+          :width       => (params["width"] || 1920).to_i,
+          :height      => (params["height"] || 1080).to_i,
+          :antialias   => true,
+          :transparent => (ext == "png")
+        )
+
+      else
+        raise "Unsupported export format: #{format}"
       end
+
+      raise "Exporter reported success but #{export_path} is missing" unless File.exist?(export_path)
+
+      log "Exported #{format} to #{export_path}"
+      { success: true, path: export_path, format: format, bytes: File.size(export_path) }
+    rescue StandardError => e
+      log "Error in export_scene: #{e.message}"
+      debug e.backtrace.join("\n")
+      raise
+    end
+
+    def exporter_options(format)
+      case format
+      when "obj"
+        { :triangulated_faces => true, :double_sided_faces => true,
+          :edges => false, :texture_maps => true }
+      when "dae" then { :triangulated_faces => true, :edges => false }
+      when "stl" then { :units => "model" }
+      else {}
+      end
+    end
+
+    # TEMP/TMP are unset on macOS, and Dir.tmpdir needs 'tmpdir' required —
+    # the old lookup raised NameError before it ever reached a fallback.
+    def export_dir
+      ENV['SKETCHUP_MCP_EXPORT_DIR'] || ENV['TMPDIR'] || ENV['TEMP'] || ENV['TMP'] || Dir.tmpdir
+    end
+
+    # Summary by default. Listing every entity with its bounds on a real model
+    # is thousands of tokens the caller almost never needs, so bounds are
+    # opt-in and the entity list is capped.
+    def get_scene_info(params = {})
+      model = Sketchup.active_model
+      raise "No active model" unless model
+
+      detail = [true, "true", 1, "1"].include?(params["detail"])
+      limit  = (params["limit"] || MAX_LIST_ITEMS).to_i
+      limit  = MAX_LIST_ITEMS if limit <= 0
+
+      top_level = model.entities.select { |entity|
+        entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
+      }
+
+      bounds = model.bounds
+      info = {
+        success: true,
+        name: model.title.to_s.empty? ? "Untitled" : model.title,
+        path: model.path.to_s,
+        units: model_units,
+        entity_count: model.entities.length,
+        group_count: top_level.length,
+        selection_count: model.selection.length,
+        layer_count: model.layers.length,
+        material_count: model.materials.length,
+        bounds: { min: bounds.min.to_a.map(&:to_f), max: bounds.max.to_a.map(&:to_f) },
+        entities: top_level.first(limit).map { |entity| entity_summary(entity, detail) }
+      }
+      info[:entities_omitted] = top_level.length - limit if top_level.length > limit
+
+      if detail
+        info[:layers]    = model.layers.map(&:name)
+        info[:materials] = model.materials.map(&:name)
+      end
+
+      info
+    end
+
+    def entity_summary(entity, detail = false)
+      info = { id: entity.entityID, type: entity.typename.downcase }
+      info[:name] = entity.name unless entity.name.to_s.empty?
+      info[:definition] = entity.definition.name if entity.is_a?(Sketchup::ComponentInstance)
+      if detail && entity.respond_to?(:bounds)
+        box = entity.bounds
+        info[:bounds] = { min: box.min.to_a.map(&:to_f), max: box.max.to_a.map(&:to_f) }
+      end
+      info
+    end
+
+    # One round trip, one undo step, N primitives. Building a model through
+    # create_component one shape at a time costs a full request/response pair
+    # (and a full tool-result payload) per box.
+    def create_components(params)
+      specs = params["components"]
+      raise "create_components expects a 'components' array" unless specs.is_a?(Array)
+      raise "create_components got an empty list" if specs.empty?
+
+      ids = specs.each_with_index.map do |spec, index|
+        begin
+          result = create_component(spec)
+          result[:id]
+        rescue StandardError => e
+          raise "component #{index} (#{spec.inspect}) failed: #{e.message}"
+        end
+      end
+
+      { success: true, ids: ids, count: ids.length }
+    end
+
+    # Geometry values are always inches regardless of this setting; it is
+    # reported so the caller knows what the user sees in Model Info.
+    def model_units
+      index = begin
+        Sketchup.active_model.options["UnitsOptions"]["LengthUnit"]
+      rescue StandardError
+        0
+      end
+      %w[inches feet millimeters centimeters meters][index.to_i] || "inches"
     end
     
     def set_material(params)
@@ -1879,28 +1920,22 @@ module SU_MCP
       }
     end
     
+    # The binding is created once and reused, so locals set by an earlier call
+    # are still there on the next one. The old code duplicated TOPLEVEL_BINDING
+    # per call, which forced the caller to resend the whole context every time.
     def eval_ruby(params)
-      log "Evaluating Ruby code with length: #{params['code'].length}"
-      
-      begin
-        # Create a safe binding for evaluation
-        binding = TOPLEVEL_BINDING.dup
-        
-        # Evaluate the Ruby code
-        log "Starting code evaluation..."
-        result = eval(params["code"], binding)
-        log "Code evaluation completed with result: #{result.inspect}"
-        
-        # Return success with the result as a string
-        { 
-          success: true,
-          result: result.to_s
-        }
-      rescue StandardError => e
-        log "Error in eval_ruby: #{e.message}"
-        log e.backtrace.join("\n")
-        raise "Ruby evaluation error: #{e.message}"
-      end
+      code = params["code"].to_s
+      raise "eval_ruby needs a 'code' string" if code.empty?
+
+      debug "eval_ruby (#{code.length} chars)"
+      @eval_binding ||= TOPLEVEL_BINDING.dup
+
+      result = eval(code, @eval_binding, "(mcp eval_ruby)")
+      { success: true, result: clamp(result.to_s) }
+    rescue SyntaxError, StandardError => e
+      log "Error in eval_ruby: #{e.message}"
+      debug e.backtrace.join("\n") if e.respond_to?(:backtrace) && e.backtrace
+      raise "Ruby evaluation error: #{e.message}"
     end
   end
 
@@ -1910,6 +1945,12 @@ module SU_MCP
     menu = UI.menu("Plugins").add_submenu("MCP Server")
     menu.add_item("Start Server") { @server.start }
     menu.add_item("Stop Server") { @server.stop }
+    menu.add_item("Server Status") {
+      state = @server.running? ? "running" : "stopped"
+      UI.messagebox("SketchUp MCP server is #{state}.\n\n" \
+                    "Set SKETCHUP_MCP_DEBUG=1 before launching SketchUp to open " \
+                    "the Ruby Console and log every request.")
+    }
     
     file_loaded(__FILE__)
   end
