@@ -1,414 +1,388 @@
-from mcp.server.fastmcp import FastMCP, Context
-import socket
-import json
-import asyncio
-import logging
-from dataclasses import dataclass
-from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List
+"""MCP server that drives SketchUp through the su_mcp extension's TCP socket."""
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+from mcp.server.fastmcp import FastMCP
+import itertools
+import json
+import logging
+import os
+import socket
+import threading
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional
+
+__version__ = "0.1.18"
+
+HOST = os.environ.get("SKETCHUP_MCP_HOST", "127.0.0.1")
+PORT = int(os.environ.get("SKETCHUP_MCP_PORT", "9876"))
+TIMEOUT = float(os.environ.get("SKETCHUP_MCP_TIMEOUT", "60"))
+MAX_CHARS = int(os.environ.get("SKETCHUP_MCP_MAX_CHARS", "4000"))
+DEBUG = bool(os.environ.get("SKETCHUP_MCP_DEBUG"))
+
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG else logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger("SketchupMCPServer")
 
-# Define version directly to avoid pkg_resources dependency
-__version__ = "0.1.17"
-logger.info(f"SketchupMCP Server version {__version__} starting up")
 
-@dataclass
+class SketchupError(Exception):
+    """Anything that went wrong talking to, or inside, SketchUp."""
+
+
 class SketchupConnection:
-    host: str
-    port: int
-    sock: socket.socket = None
-    
-    def connect(self) -> bool:
-        """Connect to the Sketchup extension socket server"""
-        if self.sock:
-            try:
-                # Test if connection is still alive
-                self.sock.settimeout(0.1)
-                self.sock.send(b'')
-                return True
-            except (socket.error, BrokenPipeError, ConnectionResetError):
-                # Connection is dead, close it and reconnect
-                logger.info("Connection test failed, reconnecting...")
-                self.disconnect()
-            
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((self.host, self.port))
-            logger.info(f"Connected to Sketchup at {self.host}:{self.port}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to connect to Sketchup: {str(e)}")
-            self.sock = None
-            return False
-    
-    def disconnect(self):
-        """Disconnect from the Sketchup extension"""
-        if self.sock:
+    """One persistent, newline-framed JSON-RPC socket to the SketchUp extension.
+
+    The extension keeps the connection open across requests and answers each
+    line with exactly one line, tagged with the request id it was given.
+    """
+
+    def __init__(self, host: str, port: int, timeout: float) -> None:
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.sock: Optional[socket.socket] = None
+        self._buffer = b""
+        self._ids = itertools.count(1)
+        self._lock = threading.Lock()
+
+    # -- socket lifecycle -------------------------------------------------
+
+    def connect(self) -> None:
+        if self.sock is not None:
+            return
+        sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        sock.settimeout(self.timeout)
+        self.sock = sock
+        self._buffer = b""
+        logger.info("Connected to SketchUp at %s:%s", self.host, self.port)
+
+    def close(self) -> None:
+        if self.sock is not None:
             try:
                 self.sock.close()
-            except Exception as e:
-                logger.error(f"Error disconnecting from Sketchup: {str(e)}")
-            finally:
-                self.sock = None
+            except OSError:
+                pass
+        self.sock = None
+        self._buffer = b""
 
-    def receive_full_response(self, sock, buffer_size=8192):
-        """Receive the complete response, potentially in multiple chunks"""
-        chunks = []
-        sock.settimeout(15.0)
-        
-        try:
-            while True:
-                try:
-                    chunk = sock.recv(buffer_size)
-                    if not chunk:
-                        if not chunks:
-                            raise Exception("Connection closed before receiving any data")
-                        break
-                    
-                    chunks.append(chunk)
-                    
-                    try:
-                        data = b''.join(chunks)
-                        json.loads(data.decode('utf-8'))
-                        logger.info(f"Received complete response ({len(data)} bytes)")
-                        return data
-                    except json.JSONDecodeError:
-                        continue
-                except socket.timeout:
-                    logger.warning("Socket timeout during chunked receive")
-                    break
-                except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-                    logger.error(f"Socket connection error during receive: {str(e)}")
-                    raise
-        except socket.timeout:
-            logger.warning("Socket timeout during chunked receive")
-        except Exception as e:
-            logger.error(f"Error during receive: {str(e)}")
-            raise
-            
-        if chunks:
-            data = b''.join(chunks)
-            logger.info(f"Returning data after receive completion ({len(data)} bytes)")
-            try:
-                json.loads(data.decode('utf-8'))
-                return data
-            except json.JSONDecodeError:
-                raise Exception("Incomplete JSON response received")
-        else:
-            raise Exception("No data received")
+    # -- request/response -------------------------------------------------
 
-    def send_command(self, method: str, params: Dict[str, Any] = None, request_id: Any = None) -> Dict[str, Any]:
-        """Send a JSON-RPC request to Sketchup and return the response"""
-        # Try to connect if not connected
-        if not self.connect():
-            raise ConnectionError("Not connected to Sketchup")
-        
-        # Ensure we're sending a proper JSON-RPC request
-        if method == "tools/call" and params and "name" in params and "arguments" in params:
-            # This is already in the correct format
-            request = {
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-                "id": request_id
-            }
-        else:
-            # This is a direct command - convert to JSON-RPC
-            command_name = method
-            command_params = params or {}
-            
-            # Log the conversion
-            logger.info(f"Converting direct command '{command_name}' to JSON-RPC format")
-            
-            request = {
+    def call(self, tool: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        with self._lock:
+            return self._call(tool, arguments or {})
+
+    def _call(self, tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        request_id = next(self._ids)
+        payload = json.dumps(
+            {
                 "jsonrpc": "2.0",
                 "method": "tools/call",
-                "params": {
-                    "name": command_name,
-                    "arguments": command_params
-                },
-                "id": request_id
+                "params": {"name": tool, "arguments": arguments},
+                "id": request_id,
             }
-        
-        # Maximum number of retries
-        max_retries = 2
-        retry_count = 0
-        
-        while retry_count <= max_retries:
-            try:
-                logger.info(f"Sending JSON-RPC request: {request}")
-                
-                # Log the exact bytes being sent
-                request_bytes = json.dumps(request).encode('utf-8') + b'\n'
-                logger.info(f"Raw bytes being sent: {request_bytes}")
-                
-                self.sock.sendall(request_bytes)
-                logger.info(f"Request sent, waiting for response...")
-                
-                self.sock.settimeout(15.0)
-                
-                response_data = self.receive_full_response(self.sock)
-                logger.info(f"Received {len(response_data)} bytes of data")
-                
-                response = json.loads(response_data.decode('utf-8'))
-                logger.info(f"Response parsed: {response}")
+        ).encode("utf-8") + b"\n"
 
-                if not isinstance(response, dict):
-                    return response
+        logger.debug("-> %s %s", tool, _preview(arguments))
 
-                if "error" in response:
-                    logger.error(f"Sketchup error: {response['error']}")
-                    raise Exception(response["error"].get("message", "Unknown error from Sketchup"))
-
-                return response.get("result", {})
-                
-            except (socket.timeout, ConnectionError, BrokenPipeError, ConnectionResetError) as e:
-                logger.warning(f"Connection error (attempt {retry_count+1}/{max_retries+1}): {str(e)}")
-                retry_count += 1
-                
-                if retry_count <= max_retries:
-                    logger.info(f"Retrying connection...")
-                    self.disconnect()
-                    if not self.connect():
-                        logger.error("Failed to reconnect")
-                        break
-                else:
-                    logger.error(f"Max retries reached, giving up")
-                    self.sock = None
-                    raise Exception(f"Connection to Sketchup lost after {max_retries+1} attempts: {str(e)}")
-            
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON response from Sketchup: {str(e)}")
-                if 'response_data' in locals() and response_data:
-                    logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
-                raise Exception(f"Invalid response from Sketchup: {str(e)}")
-            
-            except Exception as e:
-                logger.error(f"Error communicating with Sketchup: {str(e)}")
-                self.sock = None
-                raise Exception(f"Communication error with Sketchup: {str(e)}")
-
-# Global connection management
-_sketchup_connection = None
-
-def get_sketchup_connection():
-    """Get or create a persistent Sketchup connection"""
-    global _sketchup_connection
-    
-    if _sketchup_connection is not None:
+        # A failure before any byte reaches SketchUp is safe to retry. Once the
+        # request is on the wire it must never be resent: the extension is not
+        # idempotent, and a replayed create_component builds the shape twice.
         try:
-            # Test connection with a ping command
-            ping_request = {
-                "jsonrpc": "2.0",
-                "method": "ping",
-                "params": {},
-                "id": 0
-            }
-            _sketchup_connection.sock.sendall(json.dumps(ping_request).encode('utf-8') + b'\n')
-            return _sketchup_connection
-        except Exception as e:
-            logger.warning(f"Existing connection is no longer valid: {str(e)}")
+            self.connect()
+            self.sock.sendall(payload)  # type: ignore[union-attr]
+        except OSError as first:
+            logger.info("Send failed (%s); reconnecting once", first)
+            self.close()
             try:
-                _sketchup_connection.disconnect()
-            except:
-                pass
-            _sketchup_connection = None
-    
-    if _sketchup_connection is None:
-        _sketchup_connection = SketchupConnection(host="localhost", port=9876)
-        if not _sketchup_connection.connect():
-            logger.error("Failed to connect to Sketchup")
-            _sketchup_connection = None
-            raise Exception("Could not connect to Sketchup. Make sure the Sketchup extension is running.")
-        logger.info("Created new persistent connection to Sketchup")
-    
-    return _sketchup_connection
+                self.connect()
+                self.sock.sendall(payload)  # type: ignore[union-attr]
+            except OSError as second:
+                self.close()
+                raise SketchupError(
+                    f"Cannot reach SketchUp at {self.host}:{self.port} ({second}). "
+                    "Open SketchUp, then Extensions > MCP Server > Start Server."
+                ) from second
+
+        return self._await_response(request_id, tool)
+
+    def _await_response(self, request_id: int, tool: str) -> Dict[str, Any]:
+        while True:
+            try:
+                message = self._read_message()
+            except socket.timeout:  # aliased to TimeoutError from 3.10, still a
+                                    # plain OSError subclass on 3.9 - catch it first
+                self.close()
+                raise SketchupError(
+                    f"SketchUp did not answer '{tool}' within {self.timeout:.0f}s. "
+                    "The request was NOT resent, so check the model for partial "
+                    "geometry; raise SKETCHUP_MCP_TIMEOUT for long operations."
+                ) from None
+            except OSError as exc:
+                self.close()
+                raise SketchupError(f"Connection lost during '{tool}': {exc}") from exc
+
+            if message.get("id") != request_id:
+                logger.debug("Dropping stale response id=%r", message.get("id"))
+                continue
+
+            if "error" in message:
+                error = message["error"] or {}
+                raise SketchupError(error.get("message", "Unknown SketchUp error"))
+
+            return message.get("result") or {}
+
+    def _read_message(self) -> Dict[str, Any]:
+        while b"\n" not in self._buffer:
+            chunk = self.sock.recv(65536)  # type: ignore[union-attr]
+            if not chunk:
+                raise ConnectionError("SketchUp closed the connection")
+            self._buffer += chunk
+
+        line, self._buffer = self._buffer.split(b"\n", 1)
+        text = line.strip()
+        if not text:
+            return {}
+
+        try:
+            message = json.loads(text.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SketchupError(f"Invalid JSON from SketchUp: {exc}") from exc
+
+        if not isinstance(message, dict):
+            raise SketchupError(f"Unexpected response type from SketchUp: {type(message).__name__}")
+
+        logger.debug("<- %s", _preview(message))
+        return message
+
+
+_connection: Optional[SketchupConnection] = None
+_connection_lock = threading.Lock()
+
+
+def get_sketchup_connection() -> SketchupConnection:
+    global _connection
+    with _connection_lock:
+        if _connection is None:
+            _connection = SketchupConnection(HOST, PORT, TIMEOUT)
+        return _connection
+
+
+def _preview(value: Any, limit: int = 300) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, default=str)
+    return text if len(text) <= limit else f"{text[:limit]}... ({len(text)} chars)"
+
+
+def _unwrap(result: Dict[str, Any], raw_text: bool) -> Dict[str, Any]:
+    """Flatten the extension's MCP envelope back into plain data.
+
+    The extension answers with {"content": [{"text": ...}], "resourceId": ...};
+    the text is JSON for structured tools and a plain string for eval_ruby.
+    """
+    text: Optional[str] = None
+    content = result.get("content")
+    if isinstance(content, list) and content and isinstance(content[0], dict):
+        text = content[0].get("text")
+
+    payload: Dict[str, Any] = {"success": True}
+
+    if text is not None:
+        if raw_text:
+            payload["result"] = text
+        else:
+            try:
+                parsed = json.loads(text)
+            except (TypeError, json.JSONDecodeError):
+                payload["result"] = text
+            else:
+                if isinstance(parsed, dict):
+                    payload.update(parsed)
+                else:
+                    payload["result"] = parsed
+
+    if result.get("resourceId") is not None:
+        payload.setdefault("id", result["resourceId"])
+
+    return payload
+
+
+def _respond(payload: Dict[str, Any]) -> str:
+    """Serialise a tool result, keeping it inside the response budget."""
+    text = json.dumps(payload)
+    if MAX_CHARS <= 0 or len(text) <= MAX_CHARS:
+        return text
+    return json.dumps(
+        {
+            "success": payload.get("success", True),
+            "truncated": True,
+            "total_chars": len(text),
+            "preview": text[:MAX_CHARS],
+        }
+    )
+
+
+def call_tool(name: str, arguments: Dict[str, Any], raw_text: bool = False) -> str:
+    """Run one extension tool and return its result as a JSON string."""
+    try:
+        result = get_sketchup_connection().call(name, arguments)
+        return _respond(_unwrap(result, raw_text))
+    except SketchupError as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 - surfaced to the model, not swallowed
+        logger.exception("Unexpected failure in %s", name)
+        return json.dumps({"success": False, "error": f"{type(exc).__name__}: {exc}"})
+
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
-    """Manage server startup and shutdown lifecycle"""
+    logger.info("SketchupMCP %s starting (SketchUp at %s:%s)", __version__, HOST, PORT)
     try:
-        logger.info("SketchupMCP server starting up")
-        try:
-            sketchup = get_sketchup_connection()
-            logger.info("Successfully connected to Sketchup on startup")
-        except Exception as e:
-            logger.warning(f"Could not connect to Sketchup on startup: {str(e)}")
-            logger.warning("Make sure the Sketchup extension is running")
         yield {}
     finally:
-        global _sketchup_connection
-        if _sketchup_connection:
-            logger.info("Disconnecting from Sketchup")
-            _sketchup_connection.disconnect()
-            _sketchup_connection = None
-        logger.info("SketchupMCP server shut down")
+        global _connection
+        with _connection_lock:
+            if _connection is not None:
+                _connection.close()
+                _connection = None
+        logger.info("SketchupMCP shut down")
 
-# Create MCP server with lifespan support
+
 mcp = FastMCP(
     "SketchupMCP",
-    instructions="Sketchup integration through the Model Context Protocol",
-    lifespan=server_lifespan
+    instructions=(
+        "Drive SketchUp over MCP. Geometry values are always inches, whatever "
+        "the model's display units. For anything beyond a few primitives, write "
+        "one eval_ruby script instead of many small calls - each tool call is a "
+        "full round trip, and eval_ruby keeps its local variables between calls."
+    ),
+    lifespan=server_lifespan,
 )
 
-# Tool endpoints
-@mcp.tool()
-def create_component(
-    ctx: Context,
-    type: str = "cube",
-    position: List[float] = None,
-    dimensions: List[float] = None
-) -> str:
-    """Create a new component in Sketchup"""
-    try:
-        logger.info(f"create_component called with type={type}, position={position}, dimensions={dimensions}, request_id={ctx.request_id}")
-        
-        sketchup = get_sketchup_connection()
-        
-        params = {
-            "name": "create_component",
-            "arguments": {
-                "type": type,
-                "position": position or [0,0,0],
-                "dimensions": dimensions or [1,1,1]
-            }
-        }
-        
-        logger.info(f"Calling send_command with method='tools/call', params={params}, request_id={ctx.request_id}")
-        
-        result = sketchup.send_command(
-            method="tools/call",
-            params=params,
-            request_id=ctx.request_id
-        )
-        
-        logger.info(f"create_component result: {result}")
-        return json.dumps(result)
-    except Exception as e:
-        logger.error(f"Error in create_component: {str(e)}")
-        return f"Error creating component: {str(e)}"
 
 @mcp.tool()
-def delete_component(
-    ctx: Context,
-    id: str
+def get_scene_info(detail: bool = False, limit: int = 100) -> str:
+    """Summarise the active model: counts, bounds, units, top-level entities.
+
+    Returns names and ids only by default. Set detail=True to also get each
+    entity's bounding box plus the layer and material lists.
+    """
+    return call_tool("get_scene_info", {"detail": detail, "limit": limit})
+
+
+@mcp.tool()
+def get_selection() -> str:
+    """List the ids and types of the currently selected entities."""
+    return call_tool("get_selection", {})
+
+
+@mcp.tool()
+def create_component(
+    type: str = "cube",
+    position: List[float] = None,
+    dimensions: List[float] = None,
 ) -> str:
-    """Delete a component by ID"""
-    try:
-        sketchup = get_sketchup_connection()
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "delete_component",
-                "arguments": {"id": id}
-            },
-            request_id=ctx.request_id
-        )
-        return json.dumps(result)
-    except Exception as e:
-        return f"Error deleting component: {str(e)}"
+    """Create one primitive (cube, cylinder, sphere, cone) and return its id.
+
+    position is the corner [x, y, z]; dimensions is [width, depth, height], in
+    inches. Use create_components when you need more than one shape.
+    """
+    return call_tool(
+        "create_component",
+        {
+            "type": type,
+            "position": position or [0, 0, 0],
+            "dimensions": dimensions or [1, 1, 1],
+        },
+    )
+
+
+@mcp.tool()
+def create_components(components: List[Dict[str, Any]]) -> str:
+    """Create many primitives in one round trip and one undo step.
+
+    Each item takes the same keys as create_component, e.g.
+    [{"type": "cube", "position": [0,0,0], "dimensions": [10,2,1]}, ...].
+    Returns the new ids in the order given. Prefer this over repeated
+    create_component calls: it costs one request instead of N.
+    """
+    return call_tool("create_components", {"components": components})
+
+
+@mcp.tool()
+def delete_component(id: str) -> str:
+    """Delete an entity by id."""
+    return call_tool("delete_component", {"id": id})
+
 
 @mcp.tool()
 def transform_component(
-    ctx: Context,
     id: str,
     position: List[float] = None,
     rotation: List[float] = None,
-    scale: List[float] = None
+    scale: List[float] = None,
 ) -> str:
-    """Transform a component's position, rotation, or scale"""
-    try:
-        sketchup = get_sketchup_connection()
-        arguments = {"id": id}
-        if position is not None:
-            arguments["position"] = position
-        if rotation is not None:
-            arguments["rotation"] = rotation
-        if scale is not None:
-            arguments["scale"] = scale
-            
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "transform_component",
-                "arguments": arguments
-            },
-            request_id=ctx.request_id
-        )
-        return json.dumps(result)
-    except Exception as e:
-        return f"Error transforming component: {str(e)}"
+    """Move, rotate, or scale an entity. Omitted transforms are left alone."""
+    arguments: Dict[str, Any] = {"id": id}
+    if position is not None:
+        arguments["position"] = position
+    if rotation is not None:
+        arguments["rotation"] = rotation
+    if scale is not None:
+        arguments["scale"] = scale
+    return call_tool("transform_component", arguments)
+
 
 @mcp.tool()
-def get_selection(ctx: Context) -> str:
-    """Get currently selected components"""
-    try:
-        sketchup = get_sketchup_connection()
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "get_selection",
-                "arguments": {}
-            },
-            request_id=ctx.request_id
-        )
-        return json.dumps(result)
-    except Exception as e:
-        return f"Error getting selection: {str(e)}"
+def set_material(id: str, material: str) -> str:
+    """Apply a material or colour name (e.g. "red", "Wood_Cherry") to an entity."""
+    return call_tool("set_material", {"id": id, "material": material})
+
 
 @mcp.tool()
-def set_material(
-    ctx: Context,
-    id: str,
-    material: str
-) -> str:
-    """Set material for a component"""
-    try:
-        sketchup = get_sketchup_connection()
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "set_material",
-                "arguments": {
-                    "id": id,
-                    "material": material
-                }
-            },
-            request_id=ctx.request_id
-        )
-        return json.dumps(result)
-    except Exception as e:
-        return f"Error setting material: {str(e)}"
+def boolean_operation(operation: str, target_id: str, tool_id: str) -> str:
+    """Union, difference, or intersection between two groups/component instances.
+
+    operation is one of "union", "difference", "intersection". difference cuts
+    tool_id out of target_id - the usual way to make joinery and openings.
+    """
+    return call_tool(
+        "boolean_operation",
+        {"operation": operation, "target_id": target_id, "tool_id": tool_id},
+    )
+
 
 @mcp.tool()
-def export_scene(
-    ctx: Context,
-    format: str = "skp"
+def chamfer_edges(
+    entity_id: str,
+    distance: float = 0.25,
+    edge_indices: List[int] = None,
 ) -> str:
-    """Export the current scene"""
-    try:
-        sketchup = get_sketchup_connection()
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "export",
-                "arguments": {
-                    "format": format
-                }
-            },
-            request_id=ctx.request_id
-        )
-        return json.dumps(result)
-    except Exception as e:
-        return f"Error exporting scene: {str(e)}"
+    """Bevel the edges of an entity. Omit edge_indices to chamfer every edge."""
+    arguments: Dict[str, Any] = {"entity_id": entity_id, "distance": distance}
+    if edge_indices is not None:
+        arguments["edge_indices"] = edge_indices
+    return call_tool("chamfer_edges", arguments)
+
+
+@mcp.tool()
+def fillet_edges(
+    entity_id: str,
+    radius: float = 0.25,
+    segments: int = 8,
+    edge_indices: List[int] = None,
+) -> str:
+    """Round the edges of an entity. Omit edge_indices to fillet every edge."""
+    arguments: Dict[str, Any] = {
+        "entity_id": entity_id,
+        "radius": radius,
+        "segments": segments,
+    }
+    if edge_indices is not None:
+        arguments["edge_indices"] = edge_indices
+    return call_tool("fillet_edges", arguments)
+
 
 @mcp.tool()
 def create_mortise_tenon(
-    ctx: Context,
     mortise_id: str,
     tenon_id: str,
     width: float = 1.0,
@@ -416,41 +390,26 @@ def create_mortise_tenon(
     depth: float = 1.0,
     offset_x: float = 0.0,
     offset_y: float = 0.0,
-    offset_z: float = 0.0
+    offset_z: float = 0.0,
 ) -> str:
-    """Create a mortise and tenon joint between two components"""
-    try:
-        logger.info(f"create_mortise_tenon called with mortise_id={mortise_id}, tenon_id={tenon_id}, width={width}, height={height}, depth={depth}, offsets=({offset_x}, {offset_y}, {offset_z})")
-        
-        sketchup = get_sketchup_connection()
-        
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "create_mortise_tenon",
-                "arguments": {
-                    "mortise_id": mortise_id,
-                    "tenon_id": tenon_id,
-                    "width": width,
-                    "height": height,
-                    "depth": depth,
-                    "offset_x": offset_x,
-                    "offset_y": offset_y,
-                    "offset_z": offset_z
-                }
-            },
-            request_id=ctx.request_id
-        )
-        
-        logger.info(f"create_mortise_tenon result: {result}")
-        return json.dumps(result)
-    except Exception as e:
-        logger.error(f"Error in create_mortise_tenon: {str(e)}")
-        return f"Error creating mortise and tenon joint: {str(e)}"
+    """Cut a mortise in one board and a matching tenon on another."""
+    return call_tool(
+        "create_mortise_tenon",
+        {
+            "mortise_id": mortise_id,
+            "tenon_id": tenon_id,
+            "width": width,
+            "height": height,
+            "depth": depth,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "offset_z": offset_z,
+        },
+    )
+
 
 @mcp.tool()
 def create_dovetail(
-    ctx: Context,
     tail_id: str,
     pin_id: str,
     width: float = 1.0,
@@ -460,43 +419,28 @@ def create_dovetail(
     num_tails: int = 3,
     offset_x: float = 0.0,
     offset_y: float = 0.0,
-    offset_z: float = 0.0
+    offset_z: float = 0.0,
 ) -> str:
-    """Create a dovetail joint between two components"""
-    try:
-        logger.info(f"create_dovetail called with tail_id={tail_id}, pin_id={pin_id}, width={width}, height={height}, depth={depth}, angle={angle}, num_tails={num_tails}")
-        
-        sketchup = get_sketchup_connection()
-        
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "create_dovetail",
-                "arguments": {
-                    "tail_id": tail_id,
-                    "pin_id": pin_id,
-                    "width": width,
-                    "height": height,
-                    "depth": depth,
-                    "angle": angle,
-                    "num_tails": num_tails,
-                    "offset_x": offset_x,
-                    "offset_y": offset_y,
-                    "offset_z": offset_z
-                }
-            },
-            request_id=ctx.request_id
-        )
-        
-        logger.info(f"create_dovetail result: {result}")
-        return json.dumps(result)
-    except Exception as e:
-        logger.error(f"Error in create_dovetail: {str(e)}")
-        return f"Error creating dovetail joint: {str(e)}"
+    """Cut interlocking dovetail tails and pins between two boards."""
+    return call_tool(
+        "create_dovetail",
+        {
+            "tail_id": tail_id,
+            "pin_id": pin_id,
+            "width": width,
+            "height": height,
+            "depth": depth,
+            "angle": angle,
+            "num_tails": num_tails,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "offset_z": offset_z,
+        },
+    )
+
 
 @mcp.tool()
 def create_finger_joint(
-    ctx: Context,
     board1_id: str,
     board2_id: str,
     width: float = 1.0,
@@ -505,79 +449,52 @@ def create_finger_joint(
     num_fingers: int = 5,
     offset_x: float = 0.0,
     offset_y: float = 0.0,
-    offset_z: float = 0.0
+    offset_z: float = 0.0,
 ) -> str:
-    """Create a finger joint (box joint) between two components"""
-    try:
-        logger.info(f"create_finger_joint called with board1_id={board1_id}, board2_id={board2_id}, width={width}, height={height}, depth={depth}, num_fingers={num_fingers}")
-        
-        sketchup = get_sketchup_connection()
-        
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "create_finger_joint",
-                "arguments": {
-                    "board1_id": board1_id,
-                    "board2_id": board2_id,
-                    "width": width,
-                    "height": height,
-                    "depth": depth,
-                    "num_fingers": num_fingers,
-                    "offset_x": offset_x,
-                    "offset_y": offset_y,
-                    "offset_z": offset_z
-                }
-            },
-            request_id=ctx.request_id
-        )
-        
-        logger.info(f"create_finger_joint result: {result}")
-        return json.dumps(result)
-    except Exception as e:
-        logger.error(f"Error in create_finger_joint: {str(e)}")
-        return f"Error creating finger joint: {str(e)}"
+    """Cut a finger (box) joint between two boards."""
+    return call_tool(
+        "create_finger_joint",
+        {
+            "board1_id": board1_id,
+            "board2_id": board2_id,
+            "width": width,
+            "height": height,
+            "depth": depth,
+            "num_fingers": num_fingers,
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "offset_z": offset_z,
+        },
+    )
+
 
 @mcp.tool()
-def eval_ruby(
-    ctx: Context,
-    code: str
-) -> str:
-    """Evaluate arbitrary Ruby code in Sketchup"""
-    try:
-        logger.info(f"eval_ruby called with code length: {len(code)}")
-        
-        sketchup = get_sketchup_connection()
-        
-        result = sketchup.send_command(
-            method="tools/call",
-            params={
-                "name": "eval_ruby",
-                "arguments": {
-                    "code": code
-                }
-            },
-            request_id=ctx.request_id
-        )
-        
-        logger.info(f"eval_ruby result: {result}")
-        
-        # Format the response to include the result
-        response = {
-            "success": True,
-            "result": result.get("content", [{"text": "Success"}])[0].get("text", "Success") if isinstance(result.get("content"), list) and len(result.get("content", [])) > 0 else "Success"
-        }
-        
-        return json.dumps(response)
-    except Exception as e:
-        logger.error(f"Error in eval_ruby: {str(e)}")
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
+def export_scene(format: str = "skp", width: int = 1920, height: int = 1080) -> str:
+    """Export the model and return the path written.
 
-def main():
+    Formats: skp, obj, dae, stl, fbx, 3ds, wrl, xsi, kmz, png, jpg. width and
+    height apply to image exports only. Some exporters are SketchUp Pro only,
+    and say so instead of failing silently.
+    """
+    return call_tool("export_scene", {"format": format, "width": width, "height": height})
+
+
+@mcp.tool()
+def eval_ruby(code: str) -> str:
+    """Run Ruby inside SketchUp and return the last expression, as a string.
+
+    The cheapest way to build anything non-trivial: one call can create a whole
+    assembly, and it is a single undo step. Local variables persist between
+    calls, so you can keep a reference (e.g. `legs = ...`) and reuse it later
+    instead of re-sending context. Output is truncated past
+    SKETCHUP_MCP_MAX_CHARS, so return ids or counts rather than whole objects.
+    """
+    return call_tool("eval_ruby", {"code": code}, raw_text=True)
+
+
+def main() -> None:
     mcp.run()
+
 
 if __name__ == "__main__":
     main()
