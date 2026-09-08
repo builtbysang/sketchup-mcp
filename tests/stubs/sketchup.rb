@@ -118,7 +118,37 @@ module UI
   end
 end
 
+module Geom
+  class Point3d
+    attr_accessor :x, :y, :z
+    def initialize(x = 0, y = 0, z = 0); @x = x.to_f; @y = y.to_f; @z = z.to_f; end
+    def to_a; [@x, @y, @z]; end
+    def distance(other)
+      Math.sqrt((@x - other.x)**2 + (@y - other.y)**2 + (@z - other.z)**2)
+    end
+  end
+end
+
 module Sketchup
+  class Edge
+    attr_reader :start, :end
+    def initialize(a, b); @start = a; @end = b; end
+    def length; @start.distance(@end); end
+    def typename; "Edge"; end
+  end
+
+  # Attributes and classification live on the definition, not the instance —
+  # the same as the real API.
+  class Definition
+    def initialize(instance); @instance = instance; @dicts = {}; @classification = {}; end
+    def set_attribute(dict, key, value); (@dicts[dict] ||= {})[key] = value; true; end
+    def get_attribute(dict, key, fallback = nil); (@dicts[dict] || {}).fetch(key, fallback); end
+    def attribute_dictionary(name, _create = false); @dicts[name]; end
+    def set_classification_value(path, value); @classification[path.join("/")] = value; true; end
+    def get_classification_value(path); @classification[path.join("/")]; end
+    def name; @instance.name; end
+  end
+
   class Face
     def initialize(points); @points = points; end
     def pushpull(_d); true; end
@@ -135,6 +165,13 @@ module Sketchup
       g
     end
     def add_face(*points); Face.new(points); end
+    def add_edges(*points)
+      pts = points.flatten
+      edges = []
+      pts.each_cons(2) { |a, b| edges << Edge.new(a, b) }
+      edges.each { |e| @items << e }
+      edges
+    end
     def select(&b); @items.select(&b); end
     def first(n); @items.first(n); end
   end
@@ -150,6 +187,7 @@ module Sketchup
       @name = ""
     end
     def entityID; @id; end
+    def definition; @definition ||= Definition.new(self); end
     def typename; "Group"; end
     def bounds; BoundingBox.new; end
   end

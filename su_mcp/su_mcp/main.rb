@@ -4,6 +4,8 @@ require 'socket'
 require 'fileutils'
 require 'tmpdir'
 
+require_relative 'bim/route'
+
 module SU_MCP
   # Tools that change the model. Each of these runs inside a single
   # start_operation/commit_operation pair so one MCP call == one undo step.
