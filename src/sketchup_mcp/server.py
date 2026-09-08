@@ -492,6 +492,94 @@ def eval_ruby(code: str) -> str:
     return call_tool("eval_ruby", {"code": code}, raw_text=True)
 
 
+# --- MEP quantities ---------------------------------------------------------
+# Lengths always come from the centreline route, never from an extruded pipe:
+# a bend or a joined run makes a solid report a wrong length silently.
+
+
+@mcp.tool()
+def mep_declare_storeys(storeys: List[Dict[str, Any]]) -> str:
+    """Declare the building's storeys once: [{"name": "L1", "elevation_mm": 0}, ...].
+
+    Every route's storey is then inferred from its height, so pipes never need
+    labelling with a storey by hand. A riser lands on the storey it starts from.
+    """
+    return call_tool("mep_declare_storeys", {"storeys": storeys})
+
+
+@mcp.tool()
+def mep_create_route(
+    points_mm: List[List[float]],
+    system: str = None,
+    diameter_mm: int = None,
+    material: str = "",
+    ifc_class: str = "IfcPipeSegment",
+) -> str:
+    """Draw a pipe centreline through points (millimetres) and label it.
+
+    Returns the entity id, its length in metres and its storey. Omit
+    system/diameter_mm to draw an unlabelled route; it then shows up in the
+    schedule's unlabelled row until labelled, rather than being ignored.
+    """
+    return call_tool(
+        "mep_create_route",
+        {
+            "points_mm": points_mm,
+            "system": system,
+            "diameter_mm": diameter_mm,
+            "material": material,
+            "ifc_class": ifc_class,
+        },
+    )
+
+
+@mcp.tool()
+def mep_label(
+    id: str,
+    system: str,
+    diameter_mm: int,
+    material: str = "",
+    ifc_class: str = "IfcPipeSegment",
+) -> str:
+    """Label an existing route: system, nominal diameter in mm, material, IFC class.
+
+    Diameter is a free millimetre value; common sizes here are 20, 25, 32, 40,
+    50, 63, 75, 90 and 110, but an unusual one is accepted.
+    """
+    return call_tool(
+        "mep_label",
+        {
+            "id": id,
+            "system": system,
+            "diameter_mm": diameter_mm,
+            "material": material,
+            "ifc_class": ifc_class,
+        },
+    )
+
+
+@mcp.tool()
+def mep_unlabelled() -> str:
+    """List routes carrying no label, with their ids and lengths."""
+    return call_tool("mep_unlabelled", {})
+
+
+@mcp.tool()
+def mep_schedule() -> str:
+    """The quantity schedule: metres, joints and route count per system, diameter, storey.
+
+    Unlabelled routes are reported in their own block rather than dropped, so a
+    pipe that has not been priced cannot disappear from the total.
+    """
+    return call_tool("mep_schedule", {})
+
+
+@mcp.tool()
+def mep_export_schedule(path: str = "") -> str:
+    """Write the schedule as CSV and return the path. Defaults next to the model title."""
+    return call_tool("mep_export_schedule", {"path": path})
+
+
 def main() -> None:
     mcp.run()
 

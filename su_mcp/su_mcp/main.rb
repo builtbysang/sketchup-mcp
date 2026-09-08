@@ -18,6 +18,7 @@ module SU_MCP
     boolean_operation chamfer_edges fillet_edges
     create_mortise_tenon create_dovetail create_finger_joint
     eval_ruby
+    mep_create_route mep_label mep_declare_storeys
   ].freeze
 
   class Server
@@ -320,6 +321,12 @@ module SU_MCP
       when "create_dovetail"      then create_dovetail(args)
       when "create_finger_joint"  then create_finger_joint(args)
       when "eval_ruby"            then eval_ruby(args)
+      when "mep_create_route"     then mep_create_route(args)
+      when "mep_label"            then mep_label(args)
+      when "mep_declare_storeys"  then mep_declare_storeys(args)
+      when "mep_unlabelled"       then mep_unlabelled
+      when "mep_schedule"         then mep_schedule
+      when "mep_export_schedule"  then mep_export_schedule(args)
       else
         raise "Unknown tool: #{tool_name}"
       end
@@ -1948,6 +1955,65 @@ module SU_MCP
       log "Error in eval_ruby: #{e.message}"
       debug e.backtrace.join("\n") if e.respond_to?(:backtrace) && e.backtrace
       raise "Ruby evaluation error: #{e.message}"
+    end
+
+    # --- MEP quantities -------------------------------------------------
+    # Every length reported here comes from a centreline, never from an
+    # extruded solid: see su_mcp/bim/route.rb for why.
+
+    def mep_create_route(params)
+      model  = Sketchup.active_model
+      points = params["points_mm"] || params["points"]
+      group  = Bim::Route.create(model, points)
+      if params["system"]
+        Bim::Label.write(
+          group,
+          system: params["system"],
+          diameter_mm: params["diameter_mm"],
+          material: params["material"] || "",
+          ifc_class: params["ifc_class"] || Bim::Label::DEFAULT_CLASS
+        )
+      end
+      {
+        success: true, id: group.entityID,
+        metres: Bim::Route.metres(group),
+        storey: Bim::Storey.of_route(model, group)
+      }
+    end
+
+    def mep_label(params)
+      model  = Sketchup.active_model
+      entity = model.find_entity_by_id(params["id"].to_i)
+      raise "No entity #{params["id"]}" unless entity
+
+      label = Bim::Label.write(
+        entity,
+        system: params["system"],
+        diameter_mm: params["diameter_mm"],
+        material: params["material"] || "",
+        ifc_class: params["ifc_class"] || Bim::Label::DEFAULT_CLASS
+      )
+      { success: true, id: entity.entityID, label: label }
+    end
+
+    def mep_declare_storeys(params)
+      { success: true, storeys: Bim::Storey.declare(Sketchup.active_model, params["storeys"] || []) }
+    end
+
+    def mep_unlabelled
+      model  = Sketchup.active_model
+      routes = Bim::Route.all(model).reject { |g| Bim::Label.labelled?(g) }
+      { success: true, routes: routes.map { |g| { id: g.entityID, metres: Bim::Route.metres(g) } } }
+    end
+
+    def mep_schedule
+      Bim::Schedule.build(Sketchup.active_model).merge(success: true)
+    end
+
+    def mep_export_schedule(params)
+      model = Sketchup.active_model
+      path  = params["path"].to_s.empty? ? Bim::Export.default_path(model) : params["path"]
+      { success: true, path: Bim::Export.csv(Bim::Schedule.build(model), path) }
     end
   end
 

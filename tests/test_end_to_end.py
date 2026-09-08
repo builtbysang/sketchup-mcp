@@ -62,7 +62,7 @@ async def main(port):
             tools = (await session.list_tools()).tools
             names = sorted(t.name for t in tools)
             print(f"\n[2] tool discovery ({len(names)} tools)")
-            check("all tools advertised", len(names) == 15, names)
+            check("all tools advertised", len(names) == 21, names)
             check("previously unreachable tools exposed",
                   {"boolean_operation", "chamfer_edges", "fillet_edges",
                    "get_scene_info", "create_components"} <= set(names), names)
@@ -122,6 +122,41 @@ async def main(port):
             exported = payload(await session.call_tool("export_scene", {"format": "skp"}))
             check("path returned and file exists",
                   exported["success"] and os.path.exists(exported["path"]), exported)
+
+            print("\n[12] MEP: a route, a label and a schedule over the wire")
+            r = payload(await session.call_tool(
+                "mep_declare_storeys",
+                {"storeys": [{"name": "L1", "elevation_mm": 0}]}))
+            check("storeys declared", r["success"], r)
+
+            r = payload(await session.call_tool("mep_create_route", {
+                "points_mm": [[0, 0, 0], [4000, 0, 0]],
+                "system": "cold_water", "diameter_mm": 50, "material": "PPR"}))
+            check("route created and measured", r["metres"] == 4.0, r)
+
+            r = payload(await session.call_tool(
+                "mep_create_route", {"points_mm": [[0, 1000, 0], [3000, 1000, 0]]}))
+            check("an unlabelled route is allowed", r["success"], r)
+
+            sched = payload(await session.call_tool("mep_schedule", {}))
+            check("labelled metres reported",
+                  any(row["metres"] == 4.0 for row in sched["rows"]), sched)
+            check("unlabelled surfaced", sched["unlabelled"]["routes"] == 1, sched["unlabelled"])
+
+            orphans = payload(await session.call_tool("mep_unlabelled", {}))
+            check("unlabelled route listed with an id",
+                  len(orphans["routes"]) == 1 and orphans["routes"][0]["id"], orphans)
+
+            r = payload(await session.call_tool("mep_label", {
+                "id": str(orphans["routes"][0]["id"]), "system": "rainwater",
+                "diameter_mm": 75, "material": "PVC"}))
+            check("labelling later works", r["label"]["diameter_mm"] == 75, r)
+
+            sched = payload(await session.call_tool("mep_schedule", {}))
+            check("nothing unlabelled now", sched["unlabelled"]["routes"] == 0, sched["unlabelled"])
+
+            out = payload(await session.call_tool("mep_export_schedule", {"path": ""}))
+            check("CSV written where it says", os.path.exists(out["path"]), out)
 
     print("\n" + ("END-TO-END PASSED" if not fails else "FAILED: " + ", ".join(fails)))
     return 1 if fails else 0
