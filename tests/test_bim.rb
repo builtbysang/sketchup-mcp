@@ -63,5 +63,27 @@ odd = R.create(model, [[0, 0, 0], [1000, 0, 0]])
 L.write(odd, system: "rainwater", diameter_mm: 47, material: "PVC")
 check(failures, "47mm accepted", L.read(odd)[:diameter_mm] == 47, L.read(odd).inspect)
 
+require_relative '../su_mcp/su_mcp/bim/storey'
+S = SU_MCP::Bim::Storey
+
+puts "\n[8] storeys are declared once and inferred from height"
+S.declare(model, [{ "name" => "L2", "elevation_mm" => 3200 }, { "name" => "L1", "elevation_mm" => 0 }])
+check(failures, "sorted by elevation", S.all(model).map { |s| s["name"] } == %w[L1 L2], S.all(model).inspect)
+check(failures, "at floor level", S.of(model, 0) == "L1", S.of(model, 0))
+check(failures, "just under L2", S.of(model, 3000 / 25.4) == "L1", S.of(model, 3000 / 25.4))
+check(failures, "at L2", S.of(model, 3200 / 25.4) == "L2", S.of(model, 3200 / 25.4))
+check(failures, "below the lowest storey is unassigned", S.of(model, -100) == "unassigned", S.of(model, -100))
+check(failures, "route takes the storey of its lowest point", S.of_route(model, route) == "L1", S.of_route(model, route))
+
+# A riser crossing a storey boundary belongs to the storey it starts on, not
+# both: a pipe counted twice is worse than a pipe on the wrong floor.
+riser = R.create(model, [[0, 0, 2000], [0, 0, 5000]])
+L.write(riser, system: "cold_water", diameter_mm: 32, material: "PPR")
+check(failures, "a riser is not split across storeys", S.of_route(model, riser) == "L1", S.of_route(model, riser))
+
+puts "\n[9] with no storeys declared nothing is invented"
+bare = Sketchup::Model.new
+check(failures, "unassigned, not L1", S.of(bare, 0) == "unassigned", S.of(bare, 0))
+
 puts "\n#{failures.empty? ? "ALL BIM CHECKS PASSED" : "FAILED: #{failures.join(', ')}"}"
 exit(failures.empty? ? 0 : 1)

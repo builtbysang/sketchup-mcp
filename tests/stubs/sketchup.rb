@@ -228,6 +228,8 @@ module Sketchup
     def export(_path, _opts); false; end
     def active_view; self; end
     def write_image(_o); true; end
+    def set_attribute(dict, key, value); ((@dicts ||= {})[dict] ||= {})[key] = value; true; end
+    def get_attribute(dict, key, fallback = nil); ((@dicts ||= {})[dict] || {}).fetch(key, fallback); end
   end
 
   class OpenStructish
