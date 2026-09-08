@@ -62,7 +62,7 @@ async def main(port):
             tools = (await session.list_tools()).tools
             names = sorted(t.name for t in tools)
             print(f"\n[2] tool discovery ({len(names)} tools)")
-            check("all tools advertised", len(names) == 21, names)
+            check("all tools advertised", len(names) == 22, names)
             check("previously unreachable tools exposed",
                   {"boolean_operation", "chamfer_edges", "fillet_edges",
                    "get_scene_info", "create_components"} <= set(names), names)

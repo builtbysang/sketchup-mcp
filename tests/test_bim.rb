@@ -131,5 +131,29 @@ check(failures, "total row last", lines.last.start_with?("TOTAL,"), lines.last)
 check(failures, "a comma in a value cannot break a column",
       EX.cell('PPR, white').start_with?('"'), EX.cell('PPR, white'))
 
+require_relative '../su_mcp/su_mcp/bim/solid'
+SO = SU_MCP::Bim::Solid
+
+puts "\n[13] the solid is built from the route, and never measured"
+solid = SO.build(model2, a)
+check(failures, "named so the schedule can ignore it", solid.name == "MEP Pipe", solid.name)
+check(failures, "solids are not routes", R.all(model2).none? { |g| g.name == "MEP Pipe" })
+metres_before = SCH.build(model2)[:total_metres]
+SO.build(model2, b)
+check(failures, "building a solid does not change any quantity",
+      SCH.build(model2)[:total_metres] == metres_before, SCH.build(model2)[:total_metres])
+
+puts "\n[14] extruding needs a diameter"
+begin
+  SO.build(model2, orphan)
+  check(failures, "unlabelled route refused", false, "no raise")
+rescue StandardError => e
+  check(failures, "unlabelled route refused", e.message.include?("diameter"), e.message)
+end
+
+puts "\n[15] rebuilding replaces the old solids instead of stacking them"
+built = SO.rebuild_all(model2)
+check(failures, "one solid per labelled route", built == R.all(model2).count { |r| L.labelled?(r) }, built)
+
 puts "\n#{failures.empty? ? "ALL BIM CHECKS PASSED" : "FAILED: #{failures.join(', ')}"}"
 exit(failures.empty? ? 0 : 1)

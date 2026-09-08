@@ -580,6 +580,16 @@ def mep_export_schedule(path: str = "") -> str:
     return call_tool("mep_export_schedule", {"path": path})
 
 
+@mcp.tool()
+def mep_build_solids() -> str:
+    """Extrude every labelled route into a visible pipe, replacing earlier ones.
+
+    Cosmetic only: quantities always come from the centrelines, so deleting or
+    rebuilding these changes no number in the schedule.
+    """
+    return call_tool("mep_build_solids", {})
+
+
 def main() -> None:
     mcp.run()
 

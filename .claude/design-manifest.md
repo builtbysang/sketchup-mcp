@@ -20,6 +20,8 @@ SketchUp's own Ruby API.
 | Panel status block | panel.html | — |
 | Panel button pair | panel.html | — |
 | Panel checkbox row | panel.html | — |
+| Panel schedule table | panel.html | — |
+| Panel warning line | panel.html | the unlabelled-metres notice; `--warn`, never `--danger` (it is not an error) |
 
 ## Tokens
 
@@ -34,6 +36,7 @@ toolbar icons are rendered in, so the two surfaces read as one thing:
 | `--slate` | `#37474F` | panel icon, headings |
 | `--muted` | `#6B7280` | address line, secondary text |
 | `--line` | `#E0E0E0` | dividers |
+| `--warn` | `#B26A00` | unlabelled metres — amber, so it cannot be read as a total or as an error |
 
 ## Icons
 

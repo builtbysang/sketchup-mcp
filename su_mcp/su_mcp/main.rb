@@ -9,6 +9,7 @@ require_relative 'bim/label'
 require_relative 'bim/storey'
 require_relative 'bim/schedule'
 require_relative 'bim/export'
+require_relative 'bim/solid'
 
 module SU_MCP
   # Tools that change the model. Each of these runs inside a single
@@ -18,7 +19,7 @@ module SU_MCP
     boolean_operation chamfer_edges fillet_edges
     create_mortise_tenon create_dovetail create_finger_joint
     eval_ruby
-    mep_create_route mep_label mep_declare_storeys
+    mep_create_route mep_label mep_declare_storeys mep_build_solids
   ].freeze
 
   class Server
@@ -327,6 +328,7 @@ module SU_MCP
       when "mep_unlabelled"       then mep_unlabelled
       when "mep_schedule"         then mep_schedule
       when "mep_export_schedule"  then mep_export_schedule(args)
+      when "mep_build_solids"     then mep_build_solids
       else
         raise "Unknown tool: #{tool_name}"
       end
@@ -2008,6 +2010,10 @@ module SU_MCP
 
     def mep_schedule
       Bim::Schedule.build(Sketchup.active_model).merge(success: true)
+    end
+
+    def mep_build_solids
+      { success: true, built: Bim::Solid.rebuild_all(Sketchup.active_model) }
     end
 
     def mep_export_schedule(params)

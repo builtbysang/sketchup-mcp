@@ -127,6 +127,12 @@ module Geom
       Math.sqrt((@x - other.x)**2 + (@y - other.y)**2 + (@z - other.z)**2)
     end
   end
+
+  class Vector3d
+    attr_reader :x, :y, :z
+    def initialize(x, y, z); @x = x.to_f; @y = y.to_f; @z = z.to_f; end
+    def dot(o); @x * o.x + @y * o.y + @z * o.z; end
+  end
 end
 
 module Sketchup
@@ -160,8 +166,10 @@ module Sketchup
   end
 
   class Face
-    def initialize(points); @points = points; end
-    def pushpull(_d); true; end
+    attr_reader :pulled
+    def initialize(points, normal = nil); @points = points; @normal = normal; end
+    def normal; @normal || Geom::Vector3d.new(0, 0, 1); end
+    def pushpull(d); @pulled = d; true; end
   end
 
   class Entities
@@ -174,7 +182,15 @@ module Sketchup
       @items << g
       g
     end
-    def add_face(*points); Face.new(points); end
+    def add_circle(center, normal, radius, _segments = 12)
+      @last_normal = normal
+      edge = Edge.new(center, Geom::Point3d.new(center.x + radius, center.y, center.z))
+      @items << edge
+      [edge]
+    end
+    def add_face(*points)
+      Face.new(points, @last_normal)
+    end
     def add_edges(*points)
       pts = points.flatten
       edges = []
@@ -198,6 +214,7 @@ module Sketchup
     end
     def entityID; @id; end
     def definition; @definition ||= Definition.new(self); end
+    def erase!; true; end
     def typename; "Group"; end
     def bounds; BoundingBox.new; end
   end
