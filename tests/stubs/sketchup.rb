@@ -1,6 +1,12 @@
 # Minimal stand-in for the SketchUp Ruby API, enough to exercise su_mcp's
 # socket loop, dispatch, undo wrapping and response shaping outside SketchUp.
 
+# SketchUp defines these on Kernel for its extension loading dance.
+module Kernel
+  def file_loaded?(_file); false; end
+  def file_loaded(_file); true; end
+end
+
 SKETCHUP_CONSOLE = Object.new
 def SKETCHUP_CONSOLE.show; end
 def SKETCHUP_CONSOLE.write(msg); $stderr.print(msg) if ENV['STUB_VERBOSE']; end

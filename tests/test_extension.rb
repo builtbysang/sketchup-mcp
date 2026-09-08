@@ -7,11 +7,6 @@ require 'json'
 PORT = 19876
 ENV['SKETCHUP_MCP_PORT'] = PORT.to_s
 
-module Kernel
-  def file_loaded?(_f); false; end
-  def file_loaded(_f); true; end
-end
-
 load File.expand_path("../su_mcp/su_mcp/main.rb", __dir__)
 
 # Drive the same instance the menu commands close over, through the menu.
