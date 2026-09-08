@@ -41,5 +41,27 @@ end
 puts "\n[4] routes are found by name, not by guessing"
 check(failures, "both routes listed", R.all(model).length == 2, R.all(model).length)
 
+require_relative '../su_mcp/su_mcp/bim/label'
+L = SU_MCP::Bim::Label
+
+puts "\n[5] a label rides on IFC vocabulary and reads back whole"
+L.write(route, system: "domestic_cold_water", diameter_mm: 50, material: "PPR")
+back = L.read(route)
+check(failures, "reads back", back[:system] == "domestic_cold_water" && back[:diameter_mm] == 50, back.inspect)
+check(failures, "defaults to a pipe segment", back[:ifc_class] == "IfcPipeSegment", back[:ifc_class])
+check(failures, "IFC class also written to the classifier",
+      route.definition.get_classification_value(["IFC 4", "IfcPipeSegment"]) == "IfcPipeSegment",
+      route.definition.get_classification_value(["IFC 4", "IfcPipeSegment"]).inspect)
+check(failures, "labelled? true", L.labelled?(route))
+
+puts "\n[6] an unlabelled route says so instead of returning zeros"
+check(failures, "read is nil, not a blank hash", L.read(straight).nil?, L.read(straight).inspect)
+check(failures, "labelled? false", !L.labelled?(straight))
+
+puts "\n[7] diameter is a free millimetre value, not a whitelist"
+odd = R.create(model, [[0, 0, 0], [1000, 0, 0]])
+L.write(odd, system: "rainwater", diameter_mm: 47, material: "PVC")
+check(failures, "47mm accepted", L.read(odd)[:diameter_mm] == 47, L.read(odd).inspect)
+
 puts "\n#{failures.empty? ? "ALL BIM CHECKS PASSED" : "FAILED: #{failures.join(', ')}"}"
 exit(failures.empty? ? 0 : 1)

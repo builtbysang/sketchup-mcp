@@ -5,6 +5,7 @@ require 'fileutils'
 require 'tmpdir'
 
 require_relative 'bim/route'
+require_relative 'bim/label'
 
 module SU_MCP
   # Tools that change the model. Each of these runs inside a single
