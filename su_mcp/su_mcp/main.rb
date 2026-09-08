@@ -43,6 +43,10 @@ module SU_MCP
       log(msg) if @debug
     end
 
+    # The panel reads these; a failed start is otherwise only visible in the
+    # Ruby Console, which is closed unless SKETCHUP_MCP_DEBUG is set.
+    attr_reader :host, :port, :last_error
+
     def running?
       @running
     end
@@ -55,6 +59,7 @@ module SU_MCP
 
       begin
         log "Starting server on #{@host}:#{@port}..."
+        @last_error = nil
         @server  = TCPServer.new(@host, @port)
         @clients = {}
         @running = true
@@ -63,6 +68,7 @@ module SU_MCP
 
         log "Server listening on #{@host}:#{@port}"
       rescue StandardError => e
+        @last_error = e.message
         log "Error starting server: #{e.message}"
         log e.backtrace.join("\n")
         stop
@@ -1940,6 +1946,8 @@ module SU_MCP
   end
 
   PREFS_SECTION = "SU_MCP".freeze
+  ICON_DIR   = File.join(__dir__, "icons").freeze
+  PANEL_FILE = File.join(__dir__, "panel.html").freeze
 
   # Forgetting to hit Start Server is the most common way this bridge "breaks":
   # the client can only report a refused connection. Remember the choice instead.
@@ -1953,22 +1961,95 @@ module SU_MCP
     Sketchup.write_default(PREFS_SECTION, "autostart", !!enabled)
   end
 
+  def self.state
+    {
+      running:   @server.running?,
+      host:      @server.host,
+      port:      @server.port,
+      autostart: autostart?,
+      error:     @server.last_error
+    }
+  end
+
+  # The panel is a readout, never a second source of truth: Ruby pushes state
+  # into it after every action, so it cannot disagree with the menu.
+  def self.push_state
+    return unless @panel
+
+    @panel.execute_script("render(#{state.to_json})")
+  rescue StandardError => e
+    @server.log "Panel update failed: #{e.message}"
+  end
+
+  def self.show_panel
+    if @panel
+      @panel.bring_to_front
+      return @panel
+    end
+
+    @panel = UI::HtmlDialog.new(
+      dialog_title:    "MCP Server",
+      preferences_key: "SU_MCP_panel",
+      resizable:       false,
+      width:           300,
+      height:          210
+    )
+    @panel.set_file(PANEL_FILE)
+    @panel.add_action_callback("ready")  { push_state }
+    @panel.add_action_callback("start")  { @server.start; push_state }
+    @panel.add_action_callback("stop")   { @server.stop;  push_state }
+    @panel.add_action_callback("set_autostart") do |_ctx, enabled|
+      self.autostart = enabled
+      push_state
+    end
+    @panel.set_on_closed { @panel = nil }
+    @panel.show
+    @panel
+  end
+
   unless file_loaded?(__FILE__)
     @server = Server.new
 
     menu = UI.menu("Plugins").add_submenu("MCP Server")
 
-    start_command = UI::Command.new("Start Server") { @server.start }
+    # One Command object per action, shared by the menu and the toolbar, so a
+    # button can never show a different label or state than its menu item.
+    start_command = UI::Command.new("Start Server") { @server.start; SU_MCP.push_state }
     start_command.set_validation_proc { @server.running? ? MF_GRAYED : MF_ENABLED }
+    start_command.tooltip         = "Start MCP Server"
+    start_command.status_bar_text = "Start the MCP bridge so an AI client can drive SketchUp"
+    start_command.large_icon      = File.join(ICON_DIR, "play-48.png")
+    start_command.small_icon      = File.join(ICON_DIR, "play-32.png")
     menu.add_item(start_command)
 
-    stop_command = UI::Command.new("Stop Server") { @server.stop }
+    stop_command = UI::Command.new("Stop Server") { @server.stop; SU_MCP.push_state }
     stop_command.set_validation_proc { @server.running? ? MF_ENABLED : MF_GRAYED }
+    stop_command.tooltip         = "Stop MCP Server"
+    stop_command.status_bar_text = "Close the MCP bridge and drop connected clients"
+    stop_command.large_icon      = File.join(ICON_DIR, "pause-48.png")
+    stop_command.small_icon      = File.join(ICON_DIR, "pause-32.png")
     menu.add_item(stop_command)
 
-    autostart_command = UI::Command.new("Start on Launch") { SU_MCP.autostart = !SU_MCP.autostart? }
+    panel_command = UI::Command.new("Panel") { SU_MCP.show_panel }
+    panel_command.set_validation_proc { MF_ENABLED }
+    panel_command.tooltip         = "MCP Server panel"
+    panel_command.status_bar_text = "Show server state, address and launch preference"
+    panel_command.large_icon      = File.join(ICON_DIR, "server-connection-48.png")
+    panel_command.small_icon      = File.join(ICON_DIR, "server-connection-32.png")
+    menu.add_item(panel_command)
+
+    autostart_command = UI::Command.new("Start on Launch") do
+      SU_MCP.autostart = !SU_MCP.autostart?
+      SU_MCP.push_state
+    end
     autostart_command.set_validation_proc { SU_MCP.autostart? ? MF_CHECKED : MF_UNCHECKED }
     menu.add_item(autostart_command)
+
+    toolbar = UI::Toolbar.new("MCP Server")
+    toolbar.add_item(start_command)
+    toolbar.add_item(stop_command)
+    toolbar.add_item(panel_command)
+    toolbar.restore # remembers whether the user had it showing
 
     # Deferred: extensions load before SketchUp has finished starting up.
     UI.start_timer(0, false) { @server.start } if SU_MCP.autostart?

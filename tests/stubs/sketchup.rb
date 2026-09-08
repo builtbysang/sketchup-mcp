@@ -1,6 +1,8 @@
 # Minimal stand-in for the SketchUp Ruby API, enough to exercise su_mcp's
 # socket loop, dispatch, undo wrapping and response shaping outside SketchUp.
 
+require 'json'
+
 # SketchUp defines these on Kernel for its extension loading dance.
 module Kernel
   def file_loaded?(_file); false; end
@@ -40,10 +42,67 @@ module UI
 
   class Command
     attr_reader :name
+    attr_accessor :tooltip, :status_bar_text, :large_icon, :small_icon
     def initialize(name, &block); @name = name; @block = block; end
     def invoke; @block.call; end
     def set_validation_proc(&block); @validation = block; self; end
     def validate; @validation ? @validation.call : MF_ENABLED; end
+  end
+
+  class Toolbar
+    @all = {}
+    class << self
+      def all; @all; end
+      def [](name); @all[name]; end
+    end
+    attr_reader :name, :items
+    def initialize(name)
+      @name = name
+      @items = []
+      self.class.all[name] = self
+    end
+    def add_item(command); @items << command; self; end
+    def restore; @restored = true; self; end
+    def restored?; !!@restored; end
+    def [](name); @items.find { |c| c.name == name }; end
+  end
+
+  # Records what Ruby pushed into the panel instead of running a browser.
+  class HtmlDialog
+    STYLE_DIALOG  = 0
+    STYLE_WINDOW  = 1
+    STYLE_UTILITY = 2
+
+    @last = nil
+    class << self; attr_accessor :last; end
+
+    attr_reader :options, :file, :scripts, :callbacks
+    def initialize(options = {})
+      @options = options
+      @callbacks = {}
+      @scripts = []
+      @visible = false
+      self.class.last = self
+    end
+    def set_file(path); @file = path; end
+    def add_action_callback(name, &block); @callbacks[name] = block; end
+    def set_on_closed(&block); @on_closed = block; end
+    def execute_script(js); @scripts << js; end
+    # The real page calls sketchup.ready() as soon as it loads.
+    def show
+      @visible = true
+      @callbacks["ready"]&.call(nil)
+    end
+    def visible?; @visible; end
+    def bring_to_front; @fronted = true; end
+    def fronted?; !!@fronted; end
+    def close; @visible = false; @on_closed&.call; end
+    # Stands in for a click in the panel.
+    def invoke(name, *args); @callbacks.fetch(name).call(nil, *args); end
+    def last_state
+      js = @scripts.reverse.find { |s| s.start_with?("render(") }
+      js && JSON.parse(js[/\Arender\((.*)\)\z/m, 1])
+    end
   end
 
   class FakeMenu

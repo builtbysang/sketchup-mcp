@@ -158,6 +158,46 @@ ENV['SKETCHUP_MCP_AUTOSTART'] = '1'
 check(failures, "env var forces autostart on", SU_MCP.autostart?)
 ENV.delete('SKETCHUP_MCP_AUTOSTART')
 
+puts "\n[14] toolbar shares the menu's commands rather than cloning them"
+toolbar = UI::Toolbar["MCP Server"]
+check(failures, "toolbar registered and restored", !toolbar.nil? && toolbar.restored?)
+check(failures, "three buttons", toolbar.items.length == 3, toolbar.items.map(&:name).inspect)
+%w[Start\ Server Stop\ Server].each do |name|
+  check(failures, "#{name}: one object, two surfaces", toolbar[name].equal?(menu[name]))
+end
+check(failures, "Panel button opens the panel, and sits in the menu too", !menu["Panel"].nil? && !toolbar["Panel"].nil?)
+missing = toolbar.items.flat_map { |c| [c.large_icon, c.small_icon] }.reject { |p| File.file?(p.to_s) }
+check(failures, "every icon file present", missing.empty?, missing.inspect)
+check(failures, "buttons carry tooltips", toolbar.items.none? { |c| c.tooltip.to_s.empty? })
+
+puts "\n[15] panel reads state from Ruby and drives the server"
+panel = SU_MCP.show_panel
+check(failures, "panel loads the shipped html", File.file?(panel.file.to_s) && panel.file.end_with?("panel.html"))
+s = panel.last_state
+check(failures, "state pushed on ready", !s.nil? && s["running"] == true, s.inspect)
+check(failures, "address comes from the server, not the page", s && s["port"] == PORT && !s["host"].to_s.empty?, s.inspect)
+
+panel.invoke("stop")
+check(failures, "Stop in the panel stops the server", !server.running? && panel.last_state["running"] == false)
+panel.invoke("start")
+check(failures, "Start in the panel starts it again", server.running? && panel.last_state["running"] == true)
+
+panel.invoke("set_autostart", true)
+check(failures, "checkbox writes the preference", SU_MCP.autostart? && panel.last_state["autostart"] == true)
+panel.invoke("set_autostart", false)
+check(failures, "and clears it", !SU_MCP.autostart? && panel.last_state["autostart"] == false)
+
+menu["Stop Server"].invoke
+check(failures, "menu action refreshes the panel", panel.last_state["running"] == false)
+menu["Start Server"].invoke
+
+check(failures, "opening twice fronts the same panel", SU_MCP.show_panel.equal?(panel) && panel.fronted?)
+
+busy = SU_MCP::Server.new(port: PORT)
+busy.start
+check(failures, "a taken port becomes a readable error, not silence", !busy.last_error.to_s.empty?, busy.last_error.inspect)
+check(failures, "and the failed server is not left half-open", !busy.running?)
+
 sock.close
 UI.menu("Plugins")["Stop Server"].invoke
 
