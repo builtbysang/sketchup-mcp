@@ -85,5 +85,36 @@ puts "\n[9] with no storeys declared nothing is invented"
 bare = Sketchup::Model.new
 check(failures, "unassigned, not L1", S.of(bare, 0) == "unassigned", S.of(bare, 0))
 
+require_relative '../su_mcp/su_mcp/bim/schedule'
+SCH = SU_MCP::Bim::Schedule
+
+puts "\n[10] the schedule groups by system, diameter and storey"
+model2 = Sketchup::Model.new
+S.declare(model2, [{ "name" => "L1", "elevation_mm" => 0 }])
+a = R.create(model2, [[0, 0, 0], [4000, 0, 0]])                  # 4.00 m
+b = R.create(model2, [[0, 500, 0], [2000, 500, 0]])              # 2.00 m, same system+size
+c = R.create(model2, [[0, 0, 0], [1000, 0, 0], [1000, 0, 1000]]) # 2.00 m, 1 turn, other size
+L.write(a, system: "cold_water", diameter_mm: 50, material: "PPR")
+L.write(b, system: "cold_water", diameter_mm: 50, material: "PPR")
+L.write(c, system: "cold_water", diameter_mm: 25, material: "PPR")
+orphan = R.create(model2, [[0, 0, 0], [3000, 0, 0]])             # 3.00 m, no label
+
+s = SCH.build(model2)
+row50 = s[:rows].find { |r| r["diameter_mm"] == 50 }
+row25 = s[:rows].find { |r| r["diameter_mm"] == 25 }
+check(failures, "same system+size merge into one row", row50["routes"] == 2, row50.inspect)
+check(failures, "metres add up", row50["metres"] == 6.0, row50["metres"])
+check(failures, "joints counted", row25["joints"] == 1, row25.inspect)
+check(failures, "storey carried", row50["storey"] == "L1", row50["storey"])
+check(failures, "unlabelled surfaced, not skipped", s[:unlabelled]["routes"] == 1 && s[:unlabelled]["metres"] == 3.0, s[:unlabelled].inspect)
+check(failures, "total includes the unlabelled metres", s[:total_metres] == 11.0, s[:total_metres])
+check(failures, "rows sorted by diameter", s[:rows].map { |r| r["diameter_mm"] } == [25, 50], s[:rows].map { |r| r["diameter_mm"] }.inspect)
+
+puts "\n[11] an edited route is re-measured, never remembered"
+before = SCH.build(model2)[:total_metres]
+a.entities.add_edges([Geom::Point3d.new(4000 / 25.4, 0, 0), Geom::Point3d.new(6000 / 25.4, 0, 0)])
+after = SCH.build(model2)[:total_metres]
+check(failures, "length changes when the model changes", after == (before + 2.0).round(2), "#{before} -> #{after}")
+
 puts "\n#{failures.empty? ? "ALL BIM CHECKS PASSED" : "FAILED: #{failures.join(', ')}"}"
 exit(failures.empty? ? 0 : 1)
