@@ -16,18 +16,32 @@ SketchUp is a surface modeller: a solid does not know it is a wall. "BIM-like"
 here means picking a subset, and the subset is chosen by what the owner needs
 priced. Measured on this machine 2026-09-08:
 
-- SketchUp **Pro** 24.0.483, classifications available, **IFC 2x3 and IFC 4
-  schemas already loaded**. `ComponentDefinition#set_classification_value` /
-  `#get_classification_value` both respond. So the IFC vocabulary is free — do
-  not invent a private one.
+- SketchUp **Pro** 24.0.483 lists **IFC 2x3 and IFC 4** in `model.classifications`
+  and all four classification methods respond on a ComponentDefinition.
+  **Corrected 2026-09-08 after driving the live model:** responding is not
+  working. `add_classification` returns **false for every class tried** —
+  `IfcWall`, `IfcBuildingElementProxy`, `IfcFlowSegment`, `IfcPipeSegment` —
+  on a real ComponentDefinition as well as on a group, and nothing reads back.
+  The earlier claim in this spec came from `respond_to?`, which proves nothing.
+  So the label lives in one attribute dictionary (which does work), each write
+  records whether the classifier accepted it (`ifc_bound`), and attaching real
+  IFC classes is an open research item — not a thing to assume is happening.
 - **No IFC exporter** is installed: `model.export("x.ifc")` returns *Unsupported
   file extension*, and none of the 7 installed extensions provides one. So an
   IFC **file** cannot be produced here yet. Writing IFC-shaped data is free;
   emitting IFC is not, and needs an extension the owner installs.
 
-Hence: label with IFC vocabulary, ship a CSV schedule, leave the IFC file path
-open for later. The contractor wants the schedule; only a partner opening the
-*model* in Revit wants IFC.
+Hence: label in IFC *vocabulary* (the class name is stored even though the
+classifier will not take it), ship a CSV schedule, and treat both halves of the
+IFC story — attaching classes, and emitting a file — as open. The contractor
+wants the schedule; only a partner opening the *model* in Revit wants IFC.
+
+**Verified on the live model 2026-09-08**, with the routes erased afterwards so
+the file was left as found: a two-segment route measured 6.00 m, one turn,
+storey L1; an unlabelled route surfaced as 3.00 m in its own row; the CSV came
+out with the UNLABELLED and TOTAL rows. Two bugs the stub had hidden were found
+this way — `Edge#start` returns a **Vertex**, not a point, and the classifier
+write was a silent no-op.
 
 ## The root decision: the route is the truth, the pipe is the picture
 

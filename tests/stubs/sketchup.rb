@@ -130,10 +130,17 @@ module Geom
 end
 
 module Sketchup
+  # Edge#start / #end return a Vertex in the real API, not a point — the point
+  # is behind Vertex#position. Getting this wrong here hid a real crash.
+  class Vertex
+    attr_reader :position
+    def initialize(point); @position = point; end
+  end
+
   class Edge
     attr_reader :start, :end
-    def initialize(a, b); @start = a; @end = b; end
-    def length; @start.distance(@end); end
+    def initialize(a, b); @start = Vertex.new(a); @end = Vertex.new(b); end
+    def length; @start.position.distance(@end.position); end
     def typename; "Edge"; end
   end
 
@@ -145,6 +152,9 @@ module Sketchup
     def get_attribute(dict, key, fallback = nil); (@dicts[dict] || {}).fetch(key, fallback); end
     def attribute_dictionary(name, _create = false); @dicts[name]; end
     def set_classification_value(path, value); @classification[path.join("/")] = value; true; end
+    # Mirrors the measured behaviour on SketchUp Pro 24.0.483: the schemas are
+    # listed but nothing attaches. A stub that returned true here hid that.
+    def add_classification(_schema, _type); false; end
     def get_classification_value(path); @classification[path.join("/")]; end
     def name; @instance.name; end
   end

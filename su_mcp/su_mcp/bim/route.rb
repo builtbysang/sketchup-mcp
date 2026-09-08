@@ -19,8 +19,9 @@ module SU_MCP
         group
       end
 
+      # Edge#start / #end are vertices, not points: the point is one hop further.
       def self.segments(group)
-        group.entities.grep(Sketchup::Edge).map { |e| [e.start, e.end] }
+        group.entities.grep(Sketchup::Edge).map { |e| [e.start.position, e.end.position] }
       end
 
       def self.length_inches(group)
