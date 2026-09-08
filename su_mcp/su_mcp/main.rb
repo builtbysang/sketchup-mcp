@@ -2039,7 +2039,9 @@ module SU_MCP
       host:      @server.host,
       port:      @server.port,
       autostart: autostart?,
-      error:     @server.last_error
+      error:     @server.last_error,
+      schedule:  @schedule,
+      exported:  @exported
     }
   end
 
@@ -2063,8 +2065,8 @@ module SU_MCP
       dialog_title:    "MCP Server",
       preferences_key: "SU_MCP_panel",
       resizable:       false,
-      width:           300,
-      height:          210
+      width:           320,
+      height:          460
     )
     @panel.set_file(PANEL_FILE)
     @panel.add_action_callback("ready")  { push_state }
@@ -2072,6 +2074,20 @@ module SU_MCP
     @panel.add_action_callback("stop")   { @server.stop;  push_state }
     @panel.add_action_callback("set_autostart") do |_ctx, enabled|
       self.autostart = enabled
+      push_state
+    end
+    # Built on demand, not on open: a model with hundreds of routes should not
+    # pay for a schedule nobody asked to see.
+    @panel.add_action_callback("schedule") do
+      @schedule = Bim::Schedule.build(Sketchup.active_model)
+      push_state
+    end
+    @panel.add_action_callback("export_schedule") do |_ctx, path|
+      model  = Sketchup.active_model
+      target = path.to_s.empty? ? Bim::Export.default_path(model) : path
+      @schedule = Bim::Schedule.build(model)
+      Bim::Export.csv(@schedule, target)
+      @exported = target
       push_state
     end
     @panel.set_on_closed { @panel = nil }

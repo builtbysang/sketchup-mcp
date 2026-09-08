@@ -198,6 +198,18 @@ busy.start
 check(failures, "a taken port becomes a readable error, not silence", !busy.last_error.to_s.empty?, busy.last_error.inspect)
 check(failures, "and the failed server is not left half-open", !busy.running?)
 
+puts "\n[16] the panel can show and export the schedule"
+panel.invoke("schedule")
+st = panel.last_state
+check(failures, "schedule pushed to the panel", st.key?("schedule") && !st["schedule"].nil?, st.keys.inspect)
+check(failures, "unlabelled block always present", st["schedule"]["unlabelled"].is_a?(Hash), st["schedule"].inspect)
+
+out = File.join(Dir.tmpdir, "panel_schedule.csv")
+File.delete(out) if File.exist?(out)
+panel.invoke("export_schedule", out)
+check(failures, "export writes the file the panel asked for", File.exist?(out))
+check(failures, "the panel is told where it landed", panel.last_state["exported"] == out, panel.last_state["exported"].inspect)
+
 sock.close
 UI.menu("Plugins")["Stop Server"].invoke
 
