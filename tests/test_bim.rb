@@ -116,5 +116,20 @@ a.entities.add_edges([Geom::Point3d.new(4000 / 25.4, 0, 0), Geom::Point3d.new(60
 after = SCH.build(model2)[:total_metres]
 check(failures, "length changes when the model changes", after == (before + 2.0).round(2), "#{before} -> #{after}")
 
+require_relative '../su_mcp/su_mcp/bim/export'
+EX = SU_MCP::Bim::Export
+
+puts "\n[12] the CSV carries the unlabelled row too"
+path = File.join(Dir.tmpdir, "mep_test_schedule.csv")
+File.delete(path) if File.exist?(path)
+EX.csv(SCH.build(model2), path)
+lines = File.readlines(path).map(&:chomp)
+check(failures, "file written", File.exist?(path))
+check(failures, "header first", lines.first == "system,diameter_mm,storey,material,metres,joints,routes", lines.first)
+check(failures, "unlabelled present in the file", lines.any? { |l| l.start_with?("UNLABELLED,") }, lines.inspect)
+check(failures, "total row last", lines.last.start_with?("TOTAL,"), lines.last)
+check(failures, "a comma in a value cannot break a column",
+      EX.cell('PPR, white').start_with?('"'), EX.cell('PPR, white'))
+
 puts "\n#{failures.empty? ? "ALL BIM CHECKS PASSED" : "FAILED: #{failures.join(', ')}"}"
 exit(failures.empty? ? 0 : 1)

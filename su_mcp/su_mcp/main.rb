@@ -8,6 +8,7 @@ require_relative 'bim/route'
 require_relative 'bim/label'
 require_relative 'bim/storey'
 require_relative 'bim/schedule'
+require_relative 'bim/export'
 
 module SU_MCP
   # Tools that change the model. Each of these runs inside a single
