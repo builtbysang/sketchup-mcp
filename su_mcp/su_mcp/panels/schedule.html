@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Thống kê ống</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Jura:wght@500;600&display=swap">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="row">
+    <span class="label grow">Đo từ mô hình đang mở</span>
+    <button class="btn btn-ghost btn-sm" id="measure">Đo lại</button>
+  </div>
+
+  <div class="alert err"  id="error" hidden></div>
+  <div class="alert warn" id="warn"  hidden></div>
+
+  <div class="tablewrap" id="tablewrap" hidden>
+    <table>
+      <thead>
+        <tr><th>Hệ thống</th><th class="n">ø mm</th><th>Tầng</th><th class="n">m</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <div class="empty" id="empty">
+    <span class="t">Chưa đo gì</span>
+    <span class="s">Bấm Đo lại để lấy các tuyến ống ra khỏi mô hình đang mở.</span>
+  </div>
+
+  <div class="total" id="total" hidden>
+    <span class="k">Tổng đã đo</span><span class="v" id="totalValue">—</span>
+  </div>
+
+  <button class="btn btn-solid" id="export" disabled>Xuất CSV</button>
+  <div class="logline" id="saved" hidden></div>
+
+<script>
+  function call(name, a) {
+    if (window.sketchup && window.sketchup[name]) window.sketchup[name](a);
+  }
+  function el(id) { return document.getElementById(id); }
+
+  // Số đo trong hồ sơ xây dựng Việt Nam dùng dấu phẩy; file CSV vẫn giữ dấu chấm.
+  function metres(value) { return value.toFixed(2).replace('.', ','); }
+
+  function render(s) {
+    var err = el('error');
+    err.hidden = !s.error;
+    err.textContent = s.error || '';
+
+    var sc = s.schedule;
+    var rows = (sc && sc.rows) || [];
+    var hasData = !!sc;
+
+    el('empty').hidden = hasData;
+    el('tablewrap').hidden = !hasData || rows.length === 0;
+    el('total').hidden = !hasData;
+    el('export').disabled = !hasData;
+
+    var body = el('rows');
+    body.innerHTML = '';
+    rows.forEach(function (r) {
+      var tr = document.createElement('tr');
+      [[r.system, 'sys'], [r.diameter_mm, 'n'], [r.storey, ''], [metres(r.metres), 'n']]
+        .forEach(function (cell) {
+          var td = document.createElement('td');
+          td.className = cell[1];
+          td.textContent = cell[0];
+          tr.appendChild(td);
+        });
+      body.appendChild(tr);
+    });
+
+    el('totalValue').textContent = hasData ? metres(sc.total_metres) + ' m' : '—';
+
+    // Mét chưa gán nhãn là mét chưa ai tính tiền. Nó có dòng riêng, màu riêng,
+    // và nói thẳng là không nằm trong tổng — để không bị cộng nhầm vào.
+    var warn = el('warn');
+    var un = sc && sc.unlabelled;
+    warn.hidden = !(un && un.routes > 0);
+    if (!warn.hidden) {
+      warn.innerHTML = '';
+      var b = document.createElement('b');
+      b.textContent = un.routes + ' tuyến chưa gán hệ thống';
+      warn.appendChild(b);
+      warn.appendChild(document.createTextNode(
+        metres(un.metres) + ' m — không được tính vào tổng bên dưới.'));
+    }
+
+    var saved = el('saved');
+    saved.hidden = !s.exported;
+    saved.textContent = s.exported ? 'Đã lưu · ' + s.exported : '';
+    saved.title = s.exported || '';
+  }
+
+  el('measure').onclick = function () { call('measure'); };
+  el('export').onclick  = function () { call('export', ''); };
+
+  call('ready');
+</script>
+</body>
+</html>

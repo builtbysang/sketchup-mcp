@@ -32,7 +32,7 @@ module SU_MCP
 
     def initialize(port: nil)
       @host    = ENV['SKETCHUP_MCP_HOST'] || '127.0.0.1'
-      @port    = (port || ENV['SKETCHUP_MCP_PORT'] || DEFAULT_PORT).to_i
+      @port    = (port || ENV['SKETCHUP_MCP_PORT'] || Prefs.get("port") || DEFAULT_PORT).to_i
       @server  = nil
       @running = false
       @timer_id = nil
@@ -41,11 +41,32 @@ module SU_MCP
       show_console if @debug
     end
 
+    # The dialogs show the tail of this. The Ruby Console is closed unless
+    # SKETCHUP_MCP_DEBUG is set, so without a buffer the last thing the server
+    # said is unreadable from inside SketchUp.
+    LOG_LINES = 40
+
     def log(msg)
+      @log ||= []
+      @log << { at: Time.now.strftime("%H:%M:%S"), text: msg.to_s }
+      @log.shift while @log.size > LOG_LINES
       SKETCHUP_CONSOLE.write("MCP: #{msg}\n")
     rescue StandardError
       puts "MCP: #{msg}"
     end
+
+    # Newest last, the way it reads in a console.
+    def recent_log(count = 3)
+      (@log || []).last(count)
+    end
+
+    def client_count
+      @clients.size
+    end
+
+    # Set by the dialog layer. A window showing "0 kết nối" while a client is
+    # talking is a window nobody can trust.
+    attr_accessor :on_change
 
     def debug(msg)
       log(msg) if @debug
@@ -54,6 +75,15 @@ module SU_MCP
     # The panel reads these; a failed start is otherwise only visible in the
     # Ruby Console, which is closed unless SKETCHUP_MCP_DEBUG is set.
     attr_reader :host, :port, :last_error
+
+    # Settings can move the port, but only while nothing is bound to it — a
+    # live change would leave the dialog advertising an address that is not
+    # listening.
+    def port=(value)
+      raise "Tắt server trước khi đổi cổng" if @running
+
+      @port = value.to_i
+    end
 
     def running?
       @running
@@ -135,6 +165,7 @@ module SU_MCP
         client.sync = true if client.respond_to?(:sync=)
         @clients[client] = String.new
         debug "Client connected (#{@clients.size} open)"
+        changed
       end
     rescue IO::WaitReadable, Errno::EAGAIN, Errno::EWOULDBLOCK
       # nothing else pending this tick
@@ -208,6 +239,13 @@ module SU_MCP
 
       close_socket(client)
       debug "Client #{reason} (#{@clients.size} open)"
+      changed
+    end
+
+    def changed
+      @on_change&.call
+    rescue StandardError => e
+      log "Change notice failed: #{e.message}"
     end
 
     def close_socket(socket)
@@ -2023,126 +2061,196 @@ module SU_MCP
     end
   end
 
-  PREFS_SECTION = "SU_MCP".freeze
-  ICON_DIR   = File.join(__dir__, "icons").freeze
-  PANEL_FILE = File.join(__dir__, "panel.html").freeze
+  ICON_DIR  = File.join(__dir__, "icons").freeze
+  PANEL_DIR = File.join(__dir__, "panels").freeze
 
-  # Forgetting to hit Start Server is the most common way this bridge "breaks":
-  # the client can only report a refused connection. Remember the choice instead.
+  # One place that knows what a setting is called and what it falls back to, so
+  # a dialog cannot invent a different default than the server already uses.
+  module Prefs
+    SECTION = "SU_MCP".freeze
+
+    DEFAULTS = {
+      "autostart" => false,
+      "port"      => Server::DEFAULT_PORT
+    }.freeze
+
+    def self.get(key)
+      Sketchup.read_default(SECTION, key, DEFAULTS.fetch(key))
+    end
+
+    # Refuses a key nothing reads: a typo in a dialog would otherwise write a
+    # setting that silently never comes back.
+    def self.set(key, value)
+      DEFAULTS.fetch(key)
+      Sketchup.write_default(SECTION, key, value)
+      value
+    end
+
+    def self.to_h
+      DEFAULTS.keys.each_with_object({}) { |key, h| h[key] = get(key) }
+    end
+  end
+
   def self.autostart?
     return true unless ENV['SKETCHUP_MCP_AUTOSTART'].to_s.empty?
 
-    !!Sketchup.read_default(PREFS_SECTION, "autostart", false)
+    !!Prefs.get("autostart")
   end
 
   def self.autostart=(enabled)
-    Sketchup.write_default(PREFS_SECTION, "autostart", !!enabled)
+    Prefs.set("autostart", !!enabled)
   end
 
-  def self.state
+  # One toolbar button, one window, one job. They share this plumbing and
+  # nothing else: a closed dialog is forgotten, and every action pushes fresh
+  # state instead of letting a page keep its own copy of the truth.
+  #
+  # Decided 2026-09-09: camera, scenes and rendering are NOT this plugin's job.
+  # Phanton Studio ships its own SketchUp extension (Studio Live Sync) that owns
+  # the viewport, the camera and the round trip to the render service. This one
+  # stays the MCP bridge: it drives the model, and measures it.
+  DIALOGS = {
+    server:   { title: "Máy chủ MCP",   file: "server.html",   width: 320, height: 380 },
+    schedule: { title: "Thống kê ống",  file: "schedule.html", width: 430, height: 510 },
+    settings: { title: "Cài đặt",       file: "settings.html", width: 360, height: 260 }
+  }.freeze
+
+  def self.dialogs
+    @dialogs ||= {}
+  end
+
+  def self.errors
+    @errors ||= {}
+  end
+
+  def self.open_dialog(key)
+    if (already = dialogs[key])
+      already.bring_to_front
+      return already
+    end
+
+    spec = DIALOGS.fetch(key)
+    dialog = UI::HtmlDialog.new(
+      dialog_title:    spec[:title],
+      preferences_key: "SU_MCP_#{key}",
+      resizable:       false,
+      width:           spec[:width],
+      height:          spec[:height]
+    )
+    dialog.set_file(File.join(PANEL_DIR, spec[:file]))
+    dialog.add_action_callback("ready") { push(key) }
+    send("wire_#{key}", dialog)
+    dialog.set_on_closed { dialogs.delete(key) }
+
+    # Registered before show: the page calls ready() the moment it loads, and
+    # push needs to find the dialog it is answering.
+    dialogs[key] = dialog
+    dialog.show
+    dialog
+  end
+
+  def self.push(key)
+    dialog = dialogs[key]
+    return unless dialog
+
+    dialog.execute_script("render(#{state_for(key).to_json})")
+  rescue StandardError => e
+    @server.log "Dialog #{key} update failed: #{e.message}"
+  end
+
+  # A failed action used to be invisible: the button simply did nothing. Every
+  # callback runs in here so the window can say what went wrong.
+  def self.guard(key)
+    errors[key] = nil
+    yield
+  rescue StandardError => e
+    errors[key] = e.message
+    @server.log "#{key}: #{e.message}"
+  ensure
+    push(key)
+  end
+
+  def self.state_for(key)
+    base = case key
+           when :server   then server_state
+           when :schedule then { "schedule" => @schedule, "exported" => @exported }
+           when :settings then Prefs.to_h.merge("running" => @server.running?)
+           else {}
+           end
+    base.merge("error" => base["error"] || errors[key])
+  end
+
+  def self.server_state
     {
-      running:   @server.running?,
-      host:      @server.host,
-      port:      @server.port,
-      autostart: autostart?,
-      error:     @server.last_error,
-      schedule:  @schedule,
-      exported:  @exported
+      "running" => @server.running?,
+      "host"    => @server.host,
+      "port"    => @server.port,
+      "error"   => @server.last_error,
+      "clients" => @server.client_count,
+      "log"     => @server.recent_log(4)
     }
   end
 
-  # The panel is a readout, never a second source of truth: Ruby pushes state
-  # into it after every action, so it cannot disagree with the menu.
-  def self.push_state
-    return unless @panel
-
-    @panel.execute_script("render(#{state.to_json})")
-  rescue StandardError => e
-    @server.log "Panel update failed: #{e.message}"
+  def self.wire_server(dialog)
+    dialog.add_action_callback("start")    { guard(:server) { @server.start } }
+    dialog.add_action_callback("stop")     { guard(:server) { @server.stop } }
+    dialog.add_action_callback("settings") { open_dialog(:settings) }
   end
 
-  def self.show_panel
-    if @panel
-      @panel.bring_to_front
-      return @panel
+  def self.wire_schedule(dialog)
+    dialog.add_action_callback("measure") do
+      guard(:schedule) { @schedule = Bim::Schedule.build(Sketchup.active_model) }
     end
+    dialog.add_action_callback("export") do |_c, path|
+      guard(:schedule) do
+        model  = Sketchup.active_model
+        target = path.to_s.empty? ? Bim::Export.default_path(model) : path
+        @schedule = Bim::Schedule.build(model)
+        Bim::Export.csv(@schedule, target)
+        @exported = target
+      end
+    end
+  end
 
-    @panel = UI::HtmlDialog.new(
-      dialog_title:    "MCP Server",
-      preferences_key: "SU_MCP_panel",
-      resizable:       false,
-      width:           320,
-      height:          460
-    )
-    @panel.set_file(PANEL_FILE)
-    @panel.add_action_callback("ready")  { push_state }
-    @panel.add_action_callback("start")  { @server.start; push_state }
-    @panel.add_action_callback("stop")   { @server.stop;  push_state }
-    @panel.add_action_callback("set_autostart") do |_ctx, enabled|
-      self.autostart = enabled
-      push_state
+  def self.wire_settings(dialog)
+    dialog.add_action_callback("set") do |_c, key, value|
+      guard(:settings) do
+        if key.to_s == "port"
+          # Refused rather than half-applied: the socket is already bound, and a
+          # stored port the server is not listening on is worse than no change.
+          @server.port = value
+          Prefs.set("port", value.to_i)
+        else
+          Prefs.set(key.to_s, value)
+        end
+      end
     end
-    # Built on demand, not on open: a model with hundreds of routes should not
-    # pay for a schedule nobody asked to see.
-    @panel.add_action_callback("schedule") do
-      @schedule = Bim::Schedule.build(Sketchup.active_model)
-      push_state
-    end
-    @panel.add_action_callback("export_schedule") do |_ctx, path|
-      model  = Sketchup.active_model
-      target = path.to_s.empty? ? Bim::Export.default_path(model) : path
-      @schedule = Bim::Schedule.build(model)
-      Bim::Export.csv(@schedule, target)
-      @exported = target
-      push_state
-    end
-    @panel.set_on_closed { @panel = nil }
-    @panel.show
-    @panel
   end
 
   unless file_loaded?(__FILE__)
     @server = Server.new
+    @server.on_change = -> { SU_MCP.push(:server) }
 
-    menu = UI.menu("Plugins").add_submenu("MCP Server")
-
-    # One Command object per action, shared by the menu and the toolbar, so a
-    # button can never show a different label or state than its menu item.
-    start_command = UI::Command.new("Start Server") { @server.start; SU_MCP.push_state }
-    start_command.set_validation_proc { @server.running? ? MF_GRAYED : MF_ENABLED }
-    start_command.tooltip         = "Start MCP Server"
-    start_command.status_bar_text = "Start the MCP bridge so an AI client can drive SketchUp"
-    start_command.large_icon      = File.join(ICON_DIR, "play-48.png")
-    start_command.small_icon      = File.join(ICON_DIR, "play-32.png")
-    menu.add_item(start_command)
-
-    stop_command = UI::Command.new("Stop Server") { @server.stop; SU_MCP.push_state }
-    stop_command.set_validation_proc { @server.running? ? MF_ENABLED : MF_GRAYED }
-    stop_command.tooltip         = "Stop MCP Server"
-    stop_command.status_bar_text = "Close the MCP bridge and drop connected clients"
-    stop_command.large_icon      = File.join(ICON_DIR, "pause-48.png")
-    stop_command.small_icon      = File.join(ICON_DIR, "pause-32.png")
-    menu.add_item(stop_command)
-
-    panel_command = UI::Command.new("Panel") { SU_MCP.show_panel }
-    panel_command.set_validation_proc { MF_ENABLED }
-    panel_command.tooltip         = "MCP Server panel"
-    panel_command.status_bar_text = "Show server state, address and launch preference"
-    panel_command.large_icon      = File.join(ICON_DIR, "server-connection-48.png")
-    panel_command.small_icon      = File.join(ICON_DIR, "server-connection-32.png")
-    menu.add_item(panel_command)
-
-    autostart_command = UI::Command.new("Start on Launch") do
-      SU_MCP.autostart = !SU_MCP.autostart?
-      SU_MCP.push_state
-    end
-    autostart_command.set_validation_proc { SU_MCP.autostart? ? MF_CHECKED : MF_UNCHECKED }
-    menu.add_item(autostart_command)
-
+    menu    = UI.menu("Plugins").add_submenu("MCP Server")
     toolbar = UI::Toolbar.new("MCP Server")
-    toolbar.add_item(start_command)
-    toolbar.add_item(stop_command)
-    toolbar.add_item(panel_command)
+
+    # One Command object per window, shared by the menu and the toolbar, so a
+    # button can never show a different label than its menu item.
+    [
+      [:server,   "Máy chủ MCP",   "Bật, tắt và theo dõi cầu nối MCP",      "dialog-server"],
+      [:schedule, "Thống kê ống",  "Đo tuyến ống MEP và xuất CSV",          "dialog-schedule"],
+      [:settings, "Cài đặt",       "Cổng, thư mục ảnh và khổ ảnh mặc định", "dialog-settings"]
+    ].each do |key, title, hint, icon|
+      command = UI::Command.new(title) { SU_MCP.open_dialog(key) }
+      command.set_validation_proc { MF_ENABLED }
+      command.tooltip         = title
+      command.status_bar_text = hint
+      command.large_icon      = File.join(ICON_DIR, "#{icon}-48.png")
+      command.small_icon      = File.join(ICON_DIR, "#{icon}-32.png")
+      menu.add_item(command)
+      toolbar.add_item(command)
+    end
+
     toolbar.restore # remembers whether the user had it showing
 
     # Deferred: extensions load before SketchUp has finished starting up.
@@ -2150,4 +2258,4 @@ module SU_MCP
 
     file_loaded(__FILE__)
   end
-end 
+end

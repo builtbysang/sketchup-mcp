@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Máy chủ MCP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Jura:wght@500;600&display=swap">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="row">
+    <svg class="mark" id="mark" viewBox="0 0 56 24" width="56" height="24" role="img"
+         aria-label="Trạng thái cầu nối">
+      <title id="markTitle">Đã dừng</title>
+      <rect class="end" x="1.5" y="5.5" width="13" height="13" rx="3.5"></rect>
+      <rect class="end" x="41.5" y="5.5" width="13" height="13" rx="3.5"></rect>
+      <line class="wire" x1="16" y1="12" x2="40" y2="12"></line>
+      <circle class="spark" cx="16" cy="12" r="2.6"></circle>
+    </svg>
+    <span class="state off" id="state"><span class="d"></span><span id="stateText">…</span></span>
+    <span class="grow"></span>
+    <span class="mono ellip" style="font-size:12px;color:var(--tm)" id="addr"></span>
+  </div>
+
+  <div class="alert err" id="error" hidden></div>
+
+  <button class="btn btn-solid" id="start">Bật server</button>
+  <button class="btn btn-danger" id="stop" hidden>Tắt server</button>
+
+  <div class="divider"></div>
+
+  <div class="row">
+    <span class="label grow">Máy đang kết nối</span>
+    <span class="mono" style="color:var(--t2)" id="clients">0</span>
+  </div>
+
+  <div class="divider"></div>
+
+  <span class="label">Hoạt động gần đây</span>
+  <div class="logbox" id="log"></div>
+
+  <span class="grow"></span>
+  <button class="btn btn-ghost" id="settings">Mở Cài đặt</button>
+
+<script>
+  function call(name, a, b) {
+    if (window.sketchup && window.sketchup[name]) window.sketchup[name](a, b);
+  }
+  function el(id) { return document.getElementById(id); }
+
+  // Ruby pushes state here; the page never guesses it.
+  function render(s) {
+    var running = !!s.running;
+    var busy = running && (s.clients || 0) > 0;
+
+    // The mark says three different things, so it has three states: dead,
+    // listening, and actually carrying traffic.
+    document.body.className = running ? (busy ? 'busy' : 'live') : (s.error ? 'broken' : 'idle');
+    document.getElementById('markTitle').textContent =
+      busy ? 'Đang truyền' : (running ? 'Đang chờ kết nối' : (s.error ? 'Hỏng' : 'Đã dừng'));
+
+    el('state').className = 'state ' + (running ? 'on' : (s.error ? 'err' : 'off'));
+    el('stateText').textContent = running ? 'Đang chạy' : (s.error ? 'Không bật được' : 'Đã dừng');
+    el('addr').textContent = s.host + ':' + s.port;
+
+    el('start').hidden = running;
+    el('stop').hidden = !running;
+
+    var err = el('error');
+    err.hidden = !s.error;
+    err.innerHTML = '';
+    if (s.error) {
+      var b = document.createElement('b');
+      b.textContent = String(s.error);
+      err.appendChild(b);
+      err.appendChild(document.createTextNode(
+        'Cổng có thể đang bị một cửa sổ SketchUp khác giữ. Đóng nó, hoặc đổi cổng trong Cài đặt, rồi bật lại.'));
+    }
+
+    el('clients').textContent = s.clients || 0;
+
+    var box = el('log');
+    box.innerHTML = '';
+    (s.log || []).slice().reverse().forEach(function (line) {
+      var div = document.createElement('div');
+      div.className = 'logline' + (/lỗi|error|refus/i.test(line.text) ? ' bad' : '');
+      div.textContent = line.at + '  ' + line.text;
+      box.appendChild(div);
+    });
+  }
+
+  el('start').onclick    = function () { call('start'); };
+  el('stop').onclick     = function () { call('stop'); };
+  el('settings').onclick = function () { call('settings'); };
+
+  call('ready');
+</script>
+</body>
+</html>

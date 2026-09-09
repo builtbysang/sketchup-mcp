@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Cài đặt</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Jura:wght@500;600&display=swap">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="alert err" id="error" hidden></div>
+
+  <span class="seclabel">Kết nối</span>
+
+  <div class="field">
+    <span class="label">Cổng</span>
+    <input type="number" class="mono" id="port" min="1024" max="65535" step="1">
+  </div>
+  <div class="micro" id="portNote" hidden>Server đang chạy — tắt rồi mới đổi được cổng.</div>
+
+  <div class="toggle">
+    <span class="tt">
+      <span class="h">Tự bật khi mở SketchUp</span><br>
+      <span class="s">Khỏi phải nhớ bấm Bật mỗi lần</span>
+    </span>
+    <button class="track" id="autostart" role="switch" aria-checked="false"><i></i></button>
+  </div>
+
+  <span class="grow"></span>
+
+  <div class="micro">
+    Camera, cảnh và render không thuộc plugin này — phần đó nằm ở extension
+    Studio Live Sync của Phanton Studio.
+  </div>
+
+<script>
+  function set(key, value) {
+    if (window.sketchup && window.sketchup.set) window.sketchup.set(key, value);
+  }
+  function el(id) { return document.getElementById(id); }
+
+  var current = {};
+
+  function render(s) {
+    current = s || {};
+
+    var err = el('error');
+    err.hidden = !s.error;
+    err.textContent = s.error || '';
+
+    if (document.activeElement !== el('port')) el('port').value = s.port;
+    el('port').disabled = !!s.running;
+    el('portNote').hidden = !s.running;
+
+    var t = el('autostart');
+    t.className = 'track' + (s.autostart ? ' on' : '');
+    t.setAttribute('aria-checked', s.autostart ? 'true' : 'false');
+  }
+
+  el('autostart').onclick = function () { set('autostart', !current.autostart); };
+
+  el('port').onchange = function () {
+    var value = parseInt(el('port').value, 10);
+    if (isNaN(value) || value < 1024 || value > 65535) { el('port').value = current.port; return; }
+    set('port', value);
+  };
+
+  if (window.sketchup && window.sketchup.ready) window.sketchup.ready();
+</script>
+</body>
+</html>

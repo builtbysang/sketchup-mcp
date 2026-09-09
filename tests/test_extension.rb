@@ -3,15 +3,18 @@ $LOAD_PATH.unshift(File.expand_path("stubs", __dir__))
 require 'sketchup'
 require 'socket'
 require 'json'
+require 'tmpdir'
+require 'fileutils'
 
 PORT = 19876
 ENV['SKETCHUP_MCP_PORT'] = PORT.to_s
 
 load File.expand_path("../su_mcp/su_mcp/main.rb", __dir__)
 
-# Drive the same instance the menu commands close over, through the menu.
+# Drive the same instance the toolbar commands close over, through the window
+# they open — there is no menu item that starts the server any more.
 server = SU_MCP.instance_variable_get(:@server)
-UI.menu("Plugins")["Start Server"].invoke
+SU_MCP.open_dialog(:server).invoke("start")
 
 failures = []
 def check(failures, label, cond, detail = nil)
@@ -137,84 +140,101 @@ r = send_req.call({ "jsonrpc" => "2.0", "method" => "tools/call",
                     "params" => { "name" => "nope", "arguments" => {} }, "id" => 12 })
 check(failures, "unknown tool -> error, no crash", r["error"] && r["error"]["message"].include?("Unknown tool"), r.inspect)
 
-puts "\n[12] menu reflects state without opening a dialog"
-menu = UI.menu("Plugins")
-start_item = menu["Start Server"]
-stop_item  = menu["Stop Server"]
-auto_item  = menu["Start on Launch"]
-check(failures, "menu items registered", [start_item, stop_item, auto_item].none?(&:nil?), menu.items.map(&:name).inspect)
-check(failures, "Start greys out while running", start_item.validate == MF_GRAYED, start_item.validate)
-check(failures, "Stop is available while running", stop_item.validate == MF_ENABLED, stop_item.validate)
-
-puts "\n[13] autostart preference persists and drives the checkmark"
-check(failures, "off by default", !SU_MCP.autostart? && auto_item.validate == MF_UNCHECKED, auto_item.validate)
-auto_item.invoke
-check(failures, "toggles on and is remembered", SU_MCP.autostart? && auto_item.validate == MF_CHECKED, auto_item.validate)
-check(failures, "written to SketchUp defaults", Sketchup.read_default("SU_MCP", "autostart", false) == true)
-auto_item.invoke
-check(failures, "toggles back off", !SU_MCP.autostart?, auto_item.validate)
-
-ENV['SKETCHUP_MCP_AUTOSTART'] = '1'
-check(failures, "env var forces autostart on", SU_MCP.autostart?)
-ENV.delete('SKETCHUP_MCP_AUTOSTART')
-
-puts "\n[14] toolbar shares the menu's commands rather than cloning them"
+puts "\n[12] one toolbar button per window, shared with the menu"
+menu    = UI.menu("Plugins")
 toolbar = UI::Toolbar["MCP Server"]
+titles  = ["Máy chủ MCP", "Thống kê ống", "Cài đặt"]
 check(failures, "toolbar registered and restored", !toolbar.nil? && toolbar.restored?)
-check(failures, "three buttons", toolbar.items.length == 3, toolbar.items.map(&:name).inspect)
-%w[Start\ Server Stop\ Server].each do |name|
-  check(failures, "#{name}: one object, two surfaces", toolbar[name].equal?(menu[name]))
+check(failures, "three buttons, one per window", toolbar.items.length == 3, toolbar.items.map(&:name).inspect)
+titles.each do |title|
+  check(failures, "#{title}: one object, two surfaces",
+        !menu[title].nil? && toolbar[title].equal?(menu[title]), menu.items.map(&:name).inspect)
 end
-check(failures, "Panel button opens the panel, and sits in the menu too", !menu["Panel"].nil? && !toolbar["Panel"].nil?)
 missing = toolbar.items.flat_map { |c| [c.large_icon, c.small_icon] }.reject { |p| File.file?(p.to_s) }
 check(failures, "every icon file present", missing.empty?, missing.inspect)
 check(failures, "buttons carry tooltips", toolbar.items.none? { |c| c.tooltip.to_s.empty? })
+check(failures, "no button starts the server directly any more",
+      menu["Start Server"].nil? && menu["Stop Server"].nil?, menu.items.map(&:name).inspect)
+check(failures, "camera and scenes are not this plugin's job",
+      menu["Render"].nil? && menu["Cảnh & camera"].nil?, menu.items.map(&:name).inspect)
 
-puts "\n[15] panel reads state from Ruby and drives the server"
-panel = SU_MCP.show_panel
-check(failures, "panel loads the shipped html", File.file?(panel.file.to_s) && panel.file.end_with?("panel.html"))
-s = panel.last_state
-check(failures, "state pushed on ready", !s.nil? && s["running"] == true, s.inspect)
-check(failures, "address comes from the server, not the page", s && s["port"] == PORT && !s["host"].to_s.empty?, s.inspect)
+puts "\n[13] the server window reads state from Ruby and drives the server"
+panel = SU_MCP.open_dialog(:server)
+check(failures, "loads the shipped html", File.file?(panel.file.to_s) && panel.file.end_with?("server.html"))
+st = panel.last_state
+check(failures, "state pushed on ready", !st.nil? && st["running"] == true, st.inspect)
+check(failures, "address comes from the server, not the page",
+      st && st["port"] == PORT && !st["host"].to_s.empty?, st.inspect)
+check(failures, "the open socket is counted", st["clients"].to_i >= 1, st["clients"].inspect)
+check(failures, "the window can read the log the console would have shown",
+      st["log"].is_a?(Array) && !st["log"].empty? && st["log"].last.key?("text"), st["log"].inspect)
 
 panel.invoke("stop")
-check(failures, "Stop in the panel stops the server", !server.running? && panel.last_state["running"] == false)
+check(failures, "Stop in the window stops the server", !server.running? && panel.last_state["running"] == false)
 panel.invoke("start")
-check(failures, "Start in the panel starts it again", server.running? && panel.last_state["running"] == true)
-
-panel.invoke("set_autostart", true)
-check(failures, "checkbox writes the preference", SU_MCP.autostart? && panel.last_state["autostart"] == true)
-panel.invoke("set_autostart", false)
-check(failures, "and clears it", !SU_MCP.autostart? && panel.last_state["autostart"] == false)
-
-menu["Stop Server"].invoke
-check(failures, "menu action refreshes the panel", panel.last_state["running"] == false)
-menu["Start Server"].invoke
-
-check(failures, "opening twice fronts the same panel", SU_MCP.show_panel.equal?(panel) && panel.fronted?)
+check(failures, "Start in the window starts it again", server.running? && panel.last_state["running"] == true)
+check(failures, "opening twice fronts the same window",
+      SU_MCP.open_dialog(:server).equal?(panel) && panel.fronted?)
 
 busy = SU_MCP::Server.new(port: PORT)
 busy.start
 check(failures, "a taken port becomes a readable error, not silence", !busy.last_error.to_s.empty?, busy.last_error.inspect)
 check(failures, "and the failed server is not left half-open", !busy.running?)
 
-puts "\n[16] the panel can show and export the schedule"
-panel.invoke("schedule")
-st = panel.last_state
-check(failures, "schedule pushed to the panel", st.key?("schedule") && !st["schedule"].nil?, st.keys.inspect)
-check(failures, "unlabelled block always present", st["schedule"]["unlabelled"].is_a?(Hash), st["schedule"].inspect)
+puts "\n[14] the settings window owns the preferences"
+settings = SU_MCP.open_dialog(:settings)
+check(failures, "loads the shipped html", settings.file.to_s.end_with?("settings.html"))
+sset = settings.last_state
+check(failures, "every setting arrives with a value",
+      %w[autostart port].all? { |k| sset.key?(k) }, sset.keys.inspect)
+
+check(failures, "autostart off by default", !SU_MCP.autostart?)
+settings.invoke("set", "autostart", true)
+check(failures, "toggled on and remembered",
+      SU_MCP.autostart? && settings.last_state["autostart"] == true)
+check(failures, "written to SketchUp defaults", Sketchup.read_default("SU_MCP", "autostart", false) == true)
+settings.invoke("set", "autostart", false)
+check(failures, "and cleared", !SU_MCP.autostart? && settings.last_state["autostart"] == false)
+
+ENV['SKETCHUP_MCP_AUTOSTART'] = '1'
+check(failures, "env var forces autostart on", SU_MCP.autostart?)
+ENV.delete('SKETCHUP_MCP_AUTOSTART')
+
+settings.invoke("set", "not_a_setting", 1)
+check(failures, "an unknown key is refused, not stored",
+      !settings.last_state["error"].to_s.empty?, settings.last_state["error"].inspect)
+
+settings.invoke("set", "port", 19999)
+check(failures, "port cannot move while the server is bound",
+      !settings.last_state["error"].to_s.empty? && server.port == PORT,
+      [settings.last_state["error"], server.port].inspect)
+check(failures, "and the stored port is left alone too", SU_MCP::Prefs.get("port") != 19999,
+      SU_MCP::Prefs.get("port").inspect)
+
+puts "\n[15] the schedule window measures and exports"
+schedule = SU_MCP.open_dialog(:schedule)
+check(failures, "loads the shipped html", schedule.file.to_s.end_with?("schedule.html"))
+check(failures, "nothing is measured until asked", schedule.last_state["schedule"].nil?)
+schedule.invoke("measure")
+sched = schedule.last_state["schedule"]
+check(failures, "schedule pushed to the window", !sched.nil?, schedule.last_state.keys.inspect)
+check(failures, "unlabelled block always present", sched["unlabelled"].is_a?(Hash), sched.inspect)
 
 out = File.join(Dir.tmpdir, "panel_schedule.csv")
 File.delete(out) if File.exist?(out)
-panel.invoke("export_schedule", out)
-check(failures, "export writes the file the panel asked for", File.exist?(out))
-check(failures, "the panel is told where it landed", panel.last_state["exported"] == out, panel.last_state["exported"].inspect)
+schedule.invoke("export", out)
+check(failures, "export writes the file the window asked for", File.exist?(out))
+check(failures, "the window is told where it landed", schedule.last_state["exported"] == out,
+      schedule.last_state["exported"].inspect)
 
 sock.close
-UI.menu("Plugins")["Stop Server"].invoke
+panel.invoke("stop")
+check(failures, "the server window reflects the stop", panel.last_state["running"] == false)
 
-check(failures, "Start becomes available once stopped", start_item.validate == MF_ENABLED, start_item.validate)
-check(failures, "Stop greys out once stopped", stop_item.validate == MF_GRAYED, stop_item.validate)
+settings.invoke("set", "port", 19999)
+check(failures, "the port moves once nothing is bound",
+      server.port == 19999 && SU_MCP::Prefs.get("port") == 19999,
+      [server.port, SU_MCP::Prefs.get("port")].inspect)
 
 puts "\n#{failures.empty? ? "ALL RUBY CHECKS PASSED" : "FAILED: #{failures.join(', ')}"}"
 exit(failures.empty? ? 0 : 1)

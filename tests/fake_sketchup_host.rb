@@ -5,7 +5,8 @@ $LOAD_PATH.unshift(File.join(repo, "tests", "stubs"))
 require 'sketchup'
 load File.join(repo, "su_mcp", "su_mcp", "main.rb")
 
-UI.menu("Plugins")["Start Server"].invoke
+# No menu item starts the server any more — the window that owns it does.
+SU_MCP.open_dialog(:server).invoke("start")
 $stderr.puts "fake host up on port #{ENV['SKETCHUP_MCP_PORT']}"
 $stderr.flush
 trap("INT") { exit 0 }

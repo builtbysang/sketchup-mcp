@@ -37,8 +37,15 @@ We're using uv so you'll need to ```brew install uv```
 
 ### Starting the Connection
 
-1. In Sketchup, go to Extensions > SketchupMCP > Start Server
-2. The server will start on the default port (9876)
+1. In SketchUp, open the **MCP Server** toolbar (View > Toolbars) or
+   Extensions > MCP Server. Three buttons, one window each:
+   **Máy chủ MCP** (start/stop, address, connected clients, log),
+   **Thống kê ống** (MEP schedule and CSV), **Cài đặt** (port, start on launch).
+
+   Camera, scenes and rendering are deliberately **not** here: Phanton Studio
+   ships its own SketchUp extension (Studio Live Sync) that owns the viewport
+   and the round trip to the render service. This one is the MCP bridge.
+2. Press **Bật server** in the first window; it starts on the default port (9876)
 3. Make sure the MCP server is running in your terminal
 
 ### Using with Claude
@@ -112,10 +119,10 @@ Every setting has a working default; both sides read the same environment.
 | `SKETCHUP_MCP_AUTOSTART` | unset | Force the bridge to start on launch |
 | `SKETCHUP_MCP_DEBUG` | unset | Open the Ruby Console and log every request |
 
-Tick **Extensions > MCP Server > Start on Launch** once and the bridge comes up
-with SketchUp; the choice is remembered between sessions. Start and Stop grey
-themselves out according to what the server is actually doing, so the menu is
-also the status readout.
+Turn on **Tự bật khi mở SketchUp** in the Cài đặt window once and the bridge
+comes up with SketchUp; the choice is remembered between sessions. The Máy chủ
+window is the status readout: it shows the address, how many clients are
+attached, and the tail of the log the Ruby Console would have shown.
 
 The extension no longer forces the Ruby Console open. Set `SKETCHUP_MCP_DEBUG=1`
 before launching SketchUp when you want the log.
@@ -139,7 +146,8 @@ Here are some examples of what you can ask Claude to do:
 ## Troubleshooting
 
 * **Connection issues**: Make sure the extension server is started
-  (Extensions > MCP Server > Start Server). The MCP server reconnects on its own.
+  (Extensions > MCP Server > Máy chủ MCP, then Bật server). The MCP server
+  reconnects on its own.
 * **Command failures**: Run SketchUp with `SKETCHUP_MCP_DEBUG=1` and read the
   Ruby Console.
 * **Timeout errors**: A timed-out request is *not* resent, because the extension

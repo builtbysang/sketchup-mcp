@@ -2,6 +2,7 @@
 # socket loop, dispatch, undo wrapping and response shaping outside SketchUp.
 
 require 'json'
+require 'fileutils'
 
 # SketchUp defines these on Kernel for its extension loading dance.
 module Kernel
@@ -233,6 +234,20 @@ module Sketchup
     def max; Point.new([10.0, 10.0, 10.0]); end
   end
 
+  class View
+    attr_reader :written
+    def initialize; @written = []; end
+    def write_image(options)
+      path = options[:filename] || options["filename"]
+      return false if path.to_s.empty?
+
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "png")
+      @written << options
+      true
+    end
+  end
+
   class Model
     attr_reader :entities, :selection, :operations
     def initialize
@@ -253,8 +268,7 @@ module Sketchup
     def find_entity_by_id(id); @entities.find { |e| e.entityID == id }; end
     def save(path); File.write(path, "skp"); true; end
     def export(_path, _opts); false; end
-    def active_view; self; end
-    def write_image(_o); true; end
+    def active_view; @view ||= View.new; end
     def set_attribute(dict, key, value); ((@dicts ||= {})[dict] ||= {})[key] = value; true; end
     def get_attribute(dict, key, fallback = nil); ((@dicts ||= {})[dict] || {}).fetch(key, fallback); end
   end
@@ -274,6 +288,6 @@ module Sketchup
     @defaults["#{section}/#{key}"] = value
     true
   end
-  def self.send_action(_a); end
+  def self.send_action(_action); end
   def self.require(_f); false; end
 end

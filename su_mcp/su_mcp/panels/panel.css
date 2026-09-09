@@ -1,0 +1,214 @@
+/* Phanton Studio design system on a light ground.
+   The system is dark; these windows are not — they float over SketchUp's
+   near-white workspace, where a black panel reads as a different app sitting on
+   top. The ground flips; everything else is the system's: Geist for UI and Jura
+   for numbers, the opacity scale (now black on white), elevation by surface
+   step and soft shadow rather than boxes and rules, ghost controls with no
+   border until you touch them, generous radii, and Ember kept for the one place
+   it means something.
+   Fonts load from Google when online and fall back to the host UI face when
+   not; nothing but the type changes if they never arrive. */
+:root {
+  color-scheme: light;
+
+  --page:   #fcfcfd;
+  --card:   #ffffff;
+  --sunken: #f1f2f4;
+
+  --brand: #fc1d3d;
+
+  --ok:          #15803d;
+  --ok-surface:  rgba(21,128,61,0.09);
+  --bad:         #b3261e;
+  --bad-surface: rgba(179,38,30,0.07);
+  --warn:        #8a5a00;
+  --warn-surface:rgba(138,90,0,0.09);
+
+  /* black at opacity — the mirror of the system's white scale */
+  --k-100: rgba(17,19,22,1);
+  --k-84:  rgba(17,19,22,0.84);
+  --k-70:  rgba(17,19,22,0.70);
+  --k-55:  rgba(17,19,22,0.55);
+  --k-40:  rgba(17,19,22,0.40);
+  --k-30:  rgba(17,19,22,0.30);
+  --k-22:  rgba(17,19,22,0.22);
+  --k-12:  rgba(17,19,22,0.12);
+  --k-8:   rgba(17,19,22,0.08);
+  --k-5:   rgba(17,19,22,0.05);
+  --k-3:   rgba(17,19,22,0.03);
+
+  --shadow-sm: 0 1px 2px rgba(17,19,22,0.05);
+  --shadow-md: 0 2px 10px rgba(17,19,22,0.07);
+
+  --r-sm: 8px; --r-md: 10px; --r-lg: 14px; --r-full: 999px;
+
+  --font: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, ui-sans-serif, sans-serif;
+  --num:  "Jura", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease: cubic-bezier(0.2,0.8,0.2,1);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+
+body {
+  background: var(--page);
+  color: var(--k-70);
+  font: 400 13px/1.45 var(--font);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+[hidden] { display: none !important; }
+
+.label, .seclabel { font-size: 12px; font-weight: 500; color: var(--k-40); }
+.row { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.grow { flex: 1 1 auto; min-width: 0; }
+.mono { font-family: var(--num); font-variant-numeric: tabular-nums; font-weight: 500; }
+.ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.micro { font-size: 12px; color: var(--k-40); }
+.divider { height: 1px; background: var(--k-5); flex: none; }
+
+/* ---- connection mark: two ends and the bridge between them --------------- */
+.mark { flex: none; overflow: visible; }
+.mark .end  { fill: none; stroke: var(--k-40); stroke-width: 1.6; transition: stroke 200ms ease, fill 200ms ease; }
+.mark .wire { stroke: var(--k-40); stroke-width: 1.6; stroke-linecap: round; stroke-dasharray: 3 4; transition: stroke 200ms ease; }
+.mark .spark { fill: transparent; }
+
+body.idle .mark .end,
+body.idle .mark .wire { stroke: var(--k-22); }
+
+body.broken .mark .end,
+body.broken .mark .wire { stroke: var(--bad); }
+body.broken .mark .wire { stroke-dasharray: 3 9; }
+
+body.live .mark .end  { stroke: var(--ok); }
+body.live .mark .wire { stroke: var(--ok); opacity: .5; }
+
+body.busy .mark .end   { stroke: var(--ok); fill: var(--ok-surface); }
+body.busy .mark .wire  { stroke: var(--ok); stroke-dasharray: none; }
+body.busy .mark .spark { fill: var(--ok); animation: cross 1.6s linear infinite; }
+
+@keyframes cross {
+  0%   { transform: translateX(0);    opacity: 0; }
+  15%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translateX(24px); opacity: 0; }
+}
+
+/* ---- state and messages -------------------------------------------------- */
+.state {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 28px; padding: 0 13px 0 11px;
+  border-radius: var(--r-full);
+  font-size: 12.5px; font-weight: 500; flex: none;
+  background: var(--card); box-shadow: var(--shadow-sm), 0 0 0 1px var(--k-5);
+}
+.state .d { width: 6px; height: 6px; border-radius: var(--r-full); background: currentColor; }
+.state.on  { color: var(--ok); }
+.state.off { color: var(--k-40); }
+.state.err { color: var(--bad); }
+
+.alert { border-radius: var(--r-md); padding: 11px 13px; font-size: 12.5px; line-height: 1.45; flex: none; }
+.alert b { display: block; font-weight: 600; margin-bottom: 2px; }
+.alert.err  { color: var(--bad);  background: var(--bad-surface); }
+.alert.warn { color: var(--warn); background: var(--warn-surface); }
+
+/* ---- buttons: ghost by default, ink when it is the one thing to do -------- */
+button { font: inherit; cursor: default; }
+
+.btn {
+  width: 100%; height: 38px;
+  border: 0; border-radius: var(--r-md);
+  font: 500 13px/1 var(--font);
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  transition: background-color 160ms var(--ease), color 160ms var(--ease);
+}
+.btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.btn-solid  { background: var(--k-100); color: #fff; font-weight: 600; }
+.btn-solid:hover:not(:disabled) { background: rgba(17,19,22,0.86); }
+.btn-ghost  { background: transparent; color: var(--k-70); }
+.btn-ghost:hover:not(:disabled) { background: var(--k-5); color: var(--k-100); }
+.btn-danger { background: transparent; color: var(--bad); }
+.btn-danger:hover:not(:disabled) { background: var(--bad-surface); }
+.btn:disabled { background: var(--k-3); color: var(--k-22); }
+.btn-sm { width: auto; height: 28px; padding: 0 12px; font-size: 12.5px; }
+
+/* ---- schedule table ------------------------------------------------------ */
+.tablewrap {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  border-radius: var(--r-lg); background: var(--card);
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--k-5);
+}
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th {
+  position: sticky; top: 0; background: var(--card);
+  color: var(--k-40); font-weight: 500; font-size: 12px;
+  text-align: left; padding: 9px 12px;
+  box-shadow: inset 0 -1px 0 var(--k-5); white-space: nowrap;
+}
+td { padding: 7px 12px; box-shadow: inset 0 -1px 0 var(--k-3); color: var(--k-70); white-space: nowrap; }
+tr:last-child td { box-shadow: none; }
+td.n, th.n { text-align: right; font-family: var(--num); font-weight: 500; font-variant-numeric: tabular-nums; }
+td.sys { max-width: 130px; overflow: hidden; text-overflow: ellipsis; color: var(--k-100); }
+
+.total { display: flex; align-items: baseline; padding-top: 11px; flex: none; }
+.total .k { color: var(--k-40); }
+.total .v { margin-left: auto; font-family: var(--num); font-weight: 600; font-size: 14px; color: var(--k-100); }
+
+.empty {
+  flex: 1 1 auto; min-height: 0;
+  border-radius: var(--r-lg); background: var(--sunken);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 5px; text-align: center; padding: 16px;
+}
+.empty .t { font-size: 13px; font-weight: 500; color: var(--k-100); }
+.empty .s { font-size: 12.5px; color: var(--k-55); max-width: 32ch; }
+
+/* ---- settings ------------------------------------------------------------ */
+.field { display: flex; flex-direction: column; gap: 6px; flex: none; }
+
+input[type="number"], input[type="text"] {
+  height: 36px; width: 100%;
+  border: 0; border-radius: var(--r-md);
+  background: var(--sunken); color: var(--k-100);
+  font: 400 13px var(--font); padding: 0 12px;
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+input.mono { font-family: var(--num); font-weight: 500; }
+/* The system forbids an outer ring on text entry — the field itself responds. */
+input:focus { outline: none; background: var(--card); box-shadow: inset 0 0 0 1px var(--k-12), var(--shadow-sm); }
+input:disabled { color: var(--k-30); background: var(--k-3); }
+
+.toggle { display: flex; align-items: center; gap: 12px; padding: 2px 0; flex: none; }
+.toggle .tt { flex: 1 1 auto; min-width: 0; }
+.toggle .tt .h { font-size: 13px; color: var(--k-100); }
+.toggle .tt .s { font-size: 12px; color: var(--k-40); }
+.track {
+  width: 40px; height: 22px; border-radius: var(--r-full);
+  background: var(--k-12); position: relative; flex: none; border: 0; padding: 0;
+  transition: background-color 160ms var(--ease);
+}
+.track i {
+  position: absolute; top: 3px; left: 3px;
+  width: 16px; height: 16px; border-radius: var(--r-full);
+  background: var(--card); box-shadow: var(--shadow-sm), 0 0 0 1px var(--k-5);
+  transition: translate 160ms var(--ease);
+}
+.track.on { background: var(--k-100); }
+.track.on i { translate: 18px 0; }
+.track:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* ---- log ----------------------------------------------------------------- */
+.logbox { display: flex; flex-direction: column; gap: 4px; flex: none; }
+.logline {
+  font-family: var(--num); font-weight: 500; font-size: 12px; color: var(--k-40);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.logline.bad { color: var(--bad); }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
