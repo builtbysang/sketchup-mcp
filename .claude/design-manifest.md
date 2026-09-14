@@ -8,9 +8,9 @@ SketchUp's own Ruby API.
 
 | Layer | Where | Notes |
 |---|---|---|
-| Menu | `su_mcp/su_mcp/main.rb` (bottom) | `UI.menu("Plugins")` submenu "MCP Server". Three `UI::Command`s: Start Server, Stop Server, Start on Launch. `set_validation_proc` makes the menu its own status readout (grey / check). |
-| Toolbar | same file | Reuses the **same three `UI::Command` objects** as the menu, so state and labels can never diverge. Icons: `su_mcp/su_mcp/icons/*.png`. |
-| Panel | `su_mcp/su_mcp/panel.html` | The only HTML in the repo. `UI::HtmlDialog`, opened from the toolbar. |
+| Menu | `su_mcp/su_mcp/main.rb` (bottom) | `UI.menu("Plugins")` submenu "Phanton Sketchup MCP". One `UI::Command` per window, built by walking `DIALOGS`: Máy chủ MCP, Tầng nhà, Tuyến ống, Thống kê ống, Cài đặt. Nothing starts the server from the menu any more — that moved inside its window. |
+| Toolbar | same file | Reuses the **same `UI::Command` objects** as the menu, so state and labels can never diverge. `toolbar.restore` remembers whether it was showing. Icons: `su_mcp/su_mcp/icons/dialog-*-32.png` and `-48.png`. |
+| Panels | `su_mcp/su_mcp/panels/*.html` | One `UI::HtmlDialog` per window, all sharing `panels/panel.css`. A page owns no truth: it calls `ready()` on load and Ruby answers by calling `render(state)` into it. |
 
 ## Inventory
 
