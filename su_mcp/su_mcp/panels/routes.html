@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Tuyến ống</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Jura:wght@500;600&display=swap">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="row">
+    <span class="label grow" id="count">—</span>
+    <button class="btn btn-ghost btn-sm" id="refresh">Làm mới</button>
+  </div>
+
+  <div class="alert err"  id="error" hidden></div>
+  <div class="alert warn" id="warn"  hidden></div>
+
+  <div class="tablewrap" id="tablewrap" hidden>
+    <table>
+      <thead>
+        <tr><th class="n">ID</th><th class="n">m</th><th>Tầng</th><th>Hệ thống</th><th class="n">ø</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <div class="empty" id="empty">
+    <span class="t">Mô hình chưa có tuyến ống</span>
+    <span class="s">Tuyến được tạo qua MCP. Khi đã có, chọn một dòng ở đây để gán hệ thống và đường kính cho nó.</span>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="seclabel" id="formlabel">Chọn một tuyến ở trên để gán nhãn</div>
+  <div class="form" id="form">
+    <div class="field">
+      <span class="label">Hệ thống</span>
+      <input type="text" id="system" placeholder="Cấp nước lạnh" disabled>
+    </div>
+    <div class="field">
+      <span class="label">ø mm</span>
+      <input type="number" id="diameter" class="mono" min="0" step="1" disabled>
+    </div>
+    <div class="field">
+      <span class="label">Vật liệu</span>
+      <input type="text" id="material" placeholder="PPR" disabled>
+    </div>
+    <div class="field">
+      <span class="label">Lớp IFC</span>
+      <input type="text" id="ifc" placeholder="IfcPipeSegment" disabled>
+    </div>
+  </div>
+  <button class="btn btn-solid" id="apply" disabled>Gán nhãn</button>
+
+  <div class="divider"></div>
+  <div class="row">
+    <span class="micro grow" id="built">Khối ống chỉ để nhìn — số liệu vẫn đo từ tim tuyến</span>
+    <button class="btn btn-ghost btn-sm" id="build">Dựng khối ống</button>
+  </div>
+
+<script>
+  function call(name) {
+    var rest = Array.prototype.slice.call(arguments, 1);
+    if (window.sketchup && window.sketchup[name]) window.sketchup[name].apply(null, rest);
+  }
+  function el(id) { return document.getElementById(id); }
+  function metres(value) { return Number(value).toFixed(2).replace('.', ','); }
+
+  var picked = null;
+  var routes = [];
+  var FIELDS = ['system', 'diameter', 'material', 'ifc'];
+
+  function fillForm(route) {
+    el('system').value   = route.system || '';
+    el('diameter').value = route.diameter_mm || '';
+    el('material').value = route.material || '';
+    el('ifc').value      = route.ifc_class || 'IfcPipeSegment';
+  }
+
+  function pick(id) {
+    picked = id;
+    var route = routes.filter(function (r) { return r.id === id; })[0];
+    if (!route) return;
+
+    FIELDS.forEach(function (f) { el(f).disabled = false; });
+    el('apply').disabled = false;
+    el('formlabel').textContent = 'Tuyến ' + id + ' · ' + metres(route.metres) + ' m · ' + route.storey;
+    fillForm(route);
+    paintSelection();
+    // Chọn luôn trong SketchUp, để biết dòng đang sửa là ống nào ngoài mô hình.
+    call('pick', String(id));
+  }
+
+  function paintSelection() {
+    var body = el('rows');
+    Array.prototype.forEach.call(body.children, function (tr) {
+      tr.className = Number(tr.dataset.id) === picked ? 'picked' : '';
+    });
+  }
+
+  function render(s) {
+    var err = el('error');
+    err.hidden = !s.error;
+    err.textContent = s.error || '';
+
+    routes = s.routes || [];
+    var bare = routes.filter(function (r) { return !r.labelled; });
+
+    el('empty').hidden = routes.length > 0;
+    el('tablewrap').hidden = routes.length === 0;
+    el('count').textContent = routes.length
+      ? routes.length + ' tuyến · ' + bare.length + ' chưa gán'
+      : '—';
+
+    var warn = el('warn');
+    warn.hidden = bare.length === 0;
+    if (!warn.hidden) {
+      warn.innerHTML = '';
+      var b = document.createElement('b');
+      b.textContent = bare.length + ' tuyến chưa gán hệ thống';
+      warn.appendChild(b);
+      warn.appendChild(document.createTextNode(
+        'Mét của chúng không vào bảng thống kê, và không dựng được khối.'));
+    }
+
+    var body = el('rows');
+    body.innerHTML = '';
+    routes.forEach(function (r) {
+      var tr = document.createElement('tr');
+      tr.dataset.id = r.id;
+      tr.onclick = function () { pick(r.id); };
+
+      [[r.id, 'n'],
+       [metres(r.metres), 'n'],
+       [r.storey, ''],
+       [r.labelled ? r.system : 'chưa gán', r.labelled ? 'sys' : 'sys bare'],
+       [r.labelled ? r.diameter_mm : '—', 'n']
+      ].forEach(function (cell) {
+        var td = document.createElement('td');
+        td.className = cell[1];
+        td.textContent = cell[0];
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+
+    // Tuyến đang chọn có thể vừa bị xoá khỏi mô hình; đừng giữ form trỏ vào nó.
+    if (picked !== null && !routes.some(function (r) { return r.id === picked; })) {
+      picked = null;
+      FIELDS.forEach(function (f) { el(f).disabled = true; el(f).value = ''; });
+      el('apply').disabled = true;
+      el('formlabel').textContent = 'Chọn một tuyến ở trên để gán nhãn';
+    }
+    paintSelection();
+
+    var built = el('built');
+    built.textContent = (s.built === null || s.built === undefined)
+      ? 'Khối ống chỉ để nhìn — số liệu vẫn đo từ tim tuyến'
+      : 'Đã dựng ' + s.built + ' khối ống';
+  }
+
+  el('refresh').onclick = function () { call('refresh'); };
+  el('build').onclick   = function () { call('build'); };
+  el('apply').onclick   = function () {
+    if (picked === null) return;
+    call('label', String(picked), el('system').value, el('diameter').value,
+         el('material').value, el('ifc').value);
+  };
+
+  call('ready');
+</script>
+</body>
+</html>

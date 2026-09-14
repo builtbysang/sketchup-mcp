@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>Tầng nhà</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Jura:wght@500;600&display=swap">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="row">
+    <span class="label grow">Khai báo một lần — mọi tuyến ống tự nhận tầng theo cao độ</span>
+  </div>
+
+  <div class="alert err" id="error" hidden></div>
+
+  <div class="tablewrap" id="tablewrap" hidden>
+    <table>
+      <thead>
+        <tr><th>Tên tầng</th><th class="n">Cao độ mm</th><th class="act"></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <div class="empty" id="empty">
+    <span class="t">Chưa có tầng nào</span>
+    <span class="s">Thêm tầng trệt ở cao độ 0, rồi các tầng trên. Tuyến ống nhận tầng theo điểm thấp nhất của nó.</span>
+  </div>
+
+  <button class="btn btn-ghost btn-sm" id="add">Thêm tầng</button>
+
+  <div class="divider"></div>
+  <div class="row">
+    <span class="micro grow" id="hint">Đã lưu vào mô hình</span>
+    <button class="btn btn-solid btn-sm" id="save" disabled>Lưu</button>
+  </div>
+
+<script>
+  function call(name, a) {
+    if (window.sketchup && window.sketchup[name]) window.sketchup[name](a);
+  }
+  function el(id) { return document.getElementById(id); }
+
+  var draft = [];
+  var dirty = false;
+
+  function touch() {
+    dirty = true;
+    el('hint').textContent = 'Chưa lưu';
+    el('save').disabled = false;
+  }
+
+  function paint() {
+    el('empty').hidden = draft.length > 0;
+    el('tablewrap').hidden = draft.length === 0;
+
+    var body = el('rows');
+    body.innerHTML = '';
+    draft.forEach(function (storey, i) {
+      var tr = document.createElement('tr');
+
+      var nameCell = document.createElement('td');
+      var name = document.createElement('input');
+      name.type = 'text';
+      name.value = storey.name;
+      name.placeholder = 'Tầng 1';
+      name.oninput = function () { draft[i].name = name.value; touch(); };
+      nameCell.appendChild(name);
+
+      var levelCell = document.createElement('td');
+      levelCell.className = 'n';
+      var level = document.createElement('input');
+      level.type = 'number';
+      level.className = 'mono';
+      level.step = '10';
+      level.value = storey.elevation_mm;
+      level.oninput = function () { draft[i].elevation_mm = level.value; touch(); };
+      levelCell.appendChild(level);
+
+      var actCell = document.createElement('td');
+      actCell.className = 'act';
+      var drop = document.createElement('button');
+      drop.className = 'btn btn-danger btn-sm';
+      drop.textContent = 'Xoá';
+      drop.onclick = function () { draft.splice(i, 1); touch(); paint(); };
+      actCell.appendChild(drop);
+
+      tr.appendChild(nameCell);
+      tr.appendChild(levelCell);
+      tr.appendChild(actCell);
+      body.appendChild(tr);
+    });
+  }
+
+  function render(s) {
+    var err = el('error');
+    err.hidden = !s.error;
+    err.textContent = s.error || '';
+
+    // Một lần vẽ lại không được nuốt những gì đang gõ dở. Chỉ lấy lại danh sách
+    // từ mô hình khi trong tay không còn sửa đổi nào chưa lưu.
+    if (!dirty) {
+      draft = (s.storeys || []).map(function (x) {
+        return { name: x.name, elevation_mm: x.elevation_mm };
+      });
+      el('hint').textContent = draft.length ? 'Đã lưu vào mô hình' : 'Chưa có gì để lưu';
+      el('save').disabled = true;
+      paint();
+    }
+  }
+
+  el('add').onclick = function () {
+    var last = draft.length ? Number(draft[draft.length - 1].elevation_mm) || 0 : -3000;
+    draft.push({ name: 'Tầng ' + (draft.length + 1), elevation_mm: last + 3000 });
+    touch();
+    paint();
+  };
+
+  el('save').onclick = function () {
+    var clean = draft
+      .map(function (s) {
+        return { name: String(s.name || '').trim(), elevation_mm: Number(s.elevation_mm) || 0 };
+      })
+      .filter(function (s) { return s.name !== ''; });
+    dirty = false;
+    call('declare', JSON.stringify(clean));
+  };
+
+  call('ready');
+</script>
+</body>
+</html>

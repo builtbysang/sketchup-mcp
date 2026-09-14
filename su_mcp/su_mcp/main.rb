@@ -2111,6 +2111,8 @@ module SU_MCP
   # stays the MCP bridge: it drives the model, and measures it.
   DIALOGS = {
     server:   { title: "Máy chủ MCP",   file: "server.html",   width: 320, height: 380 },
+    storeys:  { title: "Tầng nhà",      file: "storeys.html",  width: 380, height: 450 },
+    routes:   { title: "Tuyến ống",     file: "routes.html",   width: 470, height: 660 },
     schedule: { title: "Thống kê ống",  file: "schedule.html", width: 430, height: 510 },
     settings: { title: "Cài đặt",       file: "settings.html", width: 360, height: 260 }
   }.freeze
@@ -2173,6 +2175,8 @@ module SU_MCP
   def self.state_for(key)
     base = case key
            when :server   then server_state
+           when :storeys  then { "storeys" => Bim::Storey.all(Sketchup.active_model) }
+           when :routes   then routes_state
            when :schedule then { "schedule" => @schedule, "exported" => @exported }
            when :settings then Prefs.to_h.merge("running" => @server.running?)
            else {}
@@ -2189,6 +2193,97 @@ module SU_MCP
       "clients" => @server.client_count,
       "log"     => @server.recent_log(4)
     }
+  end
+
+  # Every route in the model with what is known about it. Read fresh on each
+  # push rather than cached: routes arrive over MCP while the window is open,
+  # and a list that quietly went stale is worse than no list.
+  def self.routes_state
+    model  = Sketchup.active_model
+    routes = Bim::Route.all(model).map do |group|
+      label = Bim::Label.read(group)
+      {
+        "id"          => group.entityID,
+        "metres"      => Bim::Route.metres(group),
+        "storey"      => Bim::Storey.of_route(model, group),
+        "labelled"    => !label.nil?,
+        "system"      => label && label[:system],
+        "diameter_mm" => label && label[:diameter_mm],
+        "material"    => label && label[:material],
+        "ifc_class"   => label ? label[:ifc_class] : Bim::Label::DEFAULT_CLASS
+      }
+    end
+    { "routes" => routes, "built" => @built }
+  end
+
+  # A button in one of these windows changes the model from outside the MCP
+  # request path, where the operation wrapper lives. Without this, labelling
+  # four routes is four undo steps and a pipe rebuild is hundreds.
+  def self.operate(name)
+    model = Sketchup.active_model
+    model.start_operation(name, true)
+    begin
+      result = yield model
+      model.commit_operation
+      result
+    rescue StandardError
+      model.abort_operation
+      raise
+    end
+  end
+
+  def self.find_route!(model, id)
+    entity = model.find_entity_by_id(id.to_i)
+    raise "Không còn tuyến #{id} trong mô hình" if entity.nil?
+
+    entity
+  end
+
+  def self.wire_storeys(dialog)
+    dialog.add_action_callback("declare") do |_c, json|
+      guard(:storeys) do
+        list = JSON.parse(json.to_s)
+        operate("MCP: khai báo tầng") { |model| Bim::Storey.declare(model, list) }
+      end
+    end
+  end
+
+  def self.wire_routes(dialog)
+    dialog.add_action_callback("refresh") { guard(:routes) { @built = nil } }
+
+    # Selecting it in SketchUp is the only way to tell which pipe a row is.
+    dialog.add_action_callback("pick") do |_c, id|
+      guard(:routes) do
+        model = Sketchup.active_model
+        model.selection.clear
+        model.selection.add(find_route!(model, id))
+      end
+    end
+
+    dialog.add_action_callback("label") do |_c, id, system, diameter_mm, material, ifc_class|
+      guard(:routes) do
+        raise "Tuyến phải có tên hệ thống" if system.to_s.strip.empty?
+
+        model = Sketchup.active_model
+        route = find_route!(model, id)
+        klass = ifc_class.to_s.strip
+        operate("MCP: gán nhãn tuyến ống") do
+          Bim::Label.write(
+            route,
+            system: system.to_s.strip,
+            diameter_mm: diameter_mm,
+            material: material.to_s.strip,
+            ifc_class: klass.empty? ? Bim::Label::DEFAULT_CLASS : klass
+          )
+        end
+      end
+    end
+
+    dialog.add_action_callback("build") do
+      guard(:routes) do
+        @built = operate("MCP: dựng khối ống") { |model| Bim::Solid.rebuild_all(model) }
+      end
+    end
   end
 
   def self.wire_server(dialog)
@@ -2238,6 +2333,8 @@ module SU_MCP
     # button can never show a different label than its menu item.
     [
       [:server,   "Máy chủ MCP",   "Bật, tắt và theo dõi cầu nối MCP",      "dialog-server"],
+      [:storeys,  "Tầng nhà",      "Khai báo cao độ từng tầng một lần",     "dialog-storeys"],
+      [:routes,   "Tuyến ống",     "Gán hệ thống, đường kính và dựng khối", "dialog-routes"],
       [:schedule, "Thống kê ống",  "Đo tuyến ống MEP và xuất CSV",          "dialog-schedule"],
       [:settings, "Cài đặt",       "Cổng, thư mục ảnh và khổ ảnh mặc định", "dialog-settings"]
     ].each do |key, title, hint, icon|

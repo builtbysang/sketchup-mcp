@@ -143,9 +143,10 @@ check(failures, "unknown tool -> error, no crash", r["error"] && r["error"]["mes
 puts "\n[12] one toolbar button per window, shared with the menu"
 menu    = UI.menu("Plugins")
 toolbar = UI::Toolbar["MCP Server"]
-titles  = ["Máy chủ MCP", "Thống kê ống", "Cài đặt"]
+titles  = SU_MCP::DIALOGS.values.map { |spec| spec[:title] }
 check(failures, "toolbar registered and restored", !toolbar.nil? && toolbar.restored?)
-check(failures, "three buttons, one per window", toolbar.items.length == 3, toolbar.items.map(&:name).inspect)
+check(failures, "one button per window, and no spares",
+      toolbar.items.length == SU_MCP::DIALOGS.length, toolbar.items.map(&:name).inspect)
 titles.each do |title|
   check(failures, "#{title}: one object, two surfaces",
         !menu[title].nil? && toolbar[title].equal?(menu[title]), menu.items.map(&:name).inspect)
@@ -226,6 +227,75 @@ schedule.invoke("export", out)
 check(failures, "export writes the file the window asked for", File.exist?(out))
 check(failures, "the window is told where it landed", schedule.last_state["exported"] == out,
       schedule.last_state["exported"].inspect)
+
+puts "\n[16] the storeys window declares levels once, as one undo step"
+storeys = SU_MCP.open_dialog(:storeys)
+check(failures, "loads the shipped html", storeys.file.to_s.end_with?("storeys.html"))
+check(failures, "nothing declared yet", storeys.last_state["storeys"] == [],
+      storeys.last_state["storeys"].inspect)
+
+before = Sketchup.active_model.operations.length
+storeys.invoke("declare", JSON.generate([
+  { "name" => "Tầng 2", "elevation_mm" => 3400 },
+  { "name" => "Trệt",   "elevation_mm" => 0 }
+]))
+declared = storeys.last_state["storeys"]
+check(failures, "both levels came back", declared.length == 2, declared.inspect)
+check(failures, "and in height order, not the order they were typed",
+      declared.map { |x| x["name"] } == ["Trệt", "Tầng 2"], declared.inspect)
+tail = Sketchup.active_model.operations[before..]
+check(failures, "one undo step, committed", tail == [[:start, "MCP: khai báo tầng"], [:commit]], tail.inspect)
+
+check(failures, "a level with no name is refused, and said so", begin
+  storeys.invoke("declare", JSON.generate([{ "name" => "", "elevation_mm" => 0 }]))
+  !storeys.last_state["error"].to_s.empty?
+end, storeys.last_state["error"].inspect)
+check(failures, "and the declared levels survive the refusal",
+      storeys.last_state["storeys"].length == 2, storeys.last_state["storeys"].inspect)
+
+puts "\n[17] the routes window labels a run and draws it"
+model = Sketchup.active_model
+route = SU_MCP::Bim::Route.create(model, [[0, 0, 0], [3000, 0, 0], [3000, 0, 2800]])
+routes = SU_MCP.open_dialog(:routes)
+check(failures, "loads the shipped html", routes.file.to_s.end_with?("routes.html"))
+
+listed = routes.last_state["routes"]
+mine   = listed.find { |r| r["id"] == route.entityID }
+check(failures, "the new run is listed", !mine.nil?, listed.inspect)
+check(failures, "it starts unlabelled", mine && mine["labelled"] == false, mine.inspect)
+check(failures, "its length is measured, not guessed", mine && (mine["metres"] - 5.8).abs < 0.01,
+      mine && mine["metres"].inspect)
+check(failures, "it lands on the storey it starts from", mine && mine["storey"] == "Trệt", mine.inspect)
+check(failures, "nothing is built until asked", routes.last_state["built"].nil?)
+
+routes.invoke("pick", route.entityID.to_s)
+check(failures, "picking a row selects the pipe in the model",
+      model.selection.length == 1 && model.selection.first.equal?(route),
+      model.selection.to_a.inspect)
+
+routes.invoke("label", route.entityID.to_s, "Cấp nước lạnh", 32, "PPR", "")
+mine = routes.last_state["routes"].find { |r| r["id"] == route.entityID }
+check(failures, "the label comes back on the row", mine && mine["labelled"] == true, mine.inspect)
+check(failures, "system and diameter are what was typed",
+      mine && mine["system"] == "Cấp nước lạnh" && mine["diameter_mm"] == 32, mine.inspect)
+check(failures, "an empty IFC class falls back rather than storing nothing",
+      mine && mine["ifc_class"] == SU_MCP::Bim::Label::DEFAULT_CLASS, mine && mine["ifc_class"].inspect)
+
+routes.invoke("label", route.entityID.to_s, "  ", 32, "PPR", "")
+check(failures, "a run with no system is refused, and said so",
+      !routes.last_state["error"].to_s.empty?, routes.last_state["error"].inspect)
+
+before = Sketchup.active_model.operations.length
+routes.invoke("build")
+check(failures, "the drawn pipes are counted back", routes.last_state["built"].to_i >= 1,
+      routes.last_state["built"].inspect)
+tail = Sketchup.active_model.operations[before..]
+check(failures, "drawing them is one undo step too",
+      tail == [[:start, "MCP: dựng khối ống"], [:commit]], tail.inspect)
+
+routes.invoke("label", "99999999", "Cấp nước lạnh", 32, "PPR", "")
+check(failures, "a row whose pipe was deleted is refused, not crashed on",
+      routes.last_state["error"].to_s.include?("99999999"), routes.last_state["error"].inspect)
 
 sock.close
 panel.invoke("stop")

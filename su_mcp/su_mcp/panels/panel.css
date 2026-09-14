@@ -169,6 +169,32 @@ td.sys { max-width: 130px; overflow: hidden; text-overflow: ellipsis; color: var
 .empty .t { font-size: 13px; font-weight: 500; color: var(--k-100); }
 .empty .s { font-size: 12.5px; color: var(--k-55); max-width: 32ch; }
 
+/* ---- rows you can pick, and rows you can edit ---------------------------- */
+/* A table that is also a control: the storey list is typed into, the route list
+   is chosen from. Both stay inside the table shell above rather than growing a
+   second card, so a window never reads as two panels stacked. */
+tbody tr.picked td { background: var(--k-5); color: var(--k-100); }
+tbody tr[data-id] { cursor: default; }
+tbody tr[data-id]:hover td { background: var(--k-3); }
+
+td.sys.bare { color: var(--warn); }
+
+th.act, td.act { width: 1%; text-align: right; padding-left: 0; }
+td.act .btn-sm { height: 24px; padding: 0 9px; }
+
+/* Inputs sitting in a table cell lose the field background: the cell is already
+   the surface, and a second one inside it reads as a box in a box. */
+td input[type="text"], td input[type="number"] {
+  height: 28px; background: transparent; padding: 0 6px;
+  box-shadow: inset 0 0 0 1px transparent;
+}
+td input:hover { background: var(--k-3); }
+td input:focus { background: var(--card); box-shadow: inset 0 0 0 1px var(--k-12); }
+td.n input { text-align: right; }
+
+/* ---- two-column form ----------------------------------------------------- */
+.form { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 11px; flex: none; }
+
 /* ---- settings ------------------------------------------------------------ */
 .field { display: flex; flex-direction: column; gap: 6px; flex: none; }
 
