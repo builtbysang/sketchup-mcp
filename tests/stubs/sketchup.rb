@@ -248,11 +248,28 @@ module Sketchup
     end
   end
 
+  # A plain Array stood in for this, which answers #clear but not #add — so a
+  # panel highlighting the route it is editing blew up only outside the tests.
+  class Selection
+    include Enumerable
+    def initialize; @items = []; end
+    def each(&b); @items.each(&b); end
+    def length; @items.length; end
+    def empty?; @items.empty?; end
+    def clear; @items.clear; self; end
+    def add(entity); @items.concat(Array(entity)); self; end
+    def include?(entity); @items.include?(entity); end
+    # Not a SketchUp method — the tests use it to set a selection up.
+    def replace(items); @items.replace(Array(items)); self; end
+    def to_a; @items.dup; end
+    def first; @items.first; end
+  end
+
   class Model
     attr_reader :entities, :selection, :operations
     def initialize
       @entities = Entities.new
-      @selection = []
+      @selection = Selection.new
       @operations = []
     end
     def active_entities; @entities; end
