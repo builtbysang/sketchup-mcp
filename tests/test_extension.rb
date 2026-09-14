@@ -142,7 +142,7 @@ check(failures, "unknown tool -> error, no crash", r["error"] && r["error"]["mes
 
 puts "\n[12] one toolbar button per window, shared with the menu"
 menu    = UI.menu("Plugins")
-toolbar = UI::Toolbar["MCP Server"]
+toolbar = UI::Toolbar["Phanton Sketchup MCP"]
 titles  = SU_MCP::DIALOGS.values.map { |spec| spec[:title] }
 check(failures, "toolbar registered and restored", !toolbar.nil? && toolbar.restored?)
 check(failures, "one button per window, and no spares",

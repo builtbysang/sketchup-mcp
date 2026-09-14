@@ -3,7 +3,7 @@ require 'extensions'
 
 module SU_MCP
   unless file_loaded?(__FILE__)
-    ext = SketchupExtension.new('Sketchup MCP Server', 'su_mcp/main')
+    ext = SketchupExtension.new('Phanton Sketchup MCP', 'su_mcp/main')
     ext.description = 'Model Context Protocol server for Sketchup'
     ext.version     = '1.10.0'
     ext.copyright   = '2024'

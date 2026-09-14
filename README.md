@@ -37,10 +37,12 @@ We're using uv so you'll need to ```brew install uv```
 
 ### Starting the Connection
 
-1. In SketchUp, open the **MCP Server** toolbar (View > Toolbars) or
-   Extensions > MCP Server. Three buttons, one window each:
+1. In SketchUp, open the **Phanton Sketchup MCP** toolbar (View > Toolbars) or
+   Extensions > Phanton Sketchup MCP. Five buttons, one window each:
    **Máy chủ MCP** (start/stop, address, connected clients, log),
-   **Thống kê ống** (MEP schedule and CSV), **Cài đặt** (port, start on launch).
+   **Tầng nhà** (declare storey elevations once), **Tuyến ống** (label runs,
+   draw the pipes), **Thống kê ống** (MEP schedule and CSV),
+   **Cài đặt** (port, start on launch).
 
    Camera, scenes and rendering are deliberately **not** here: Phanton Studio
    ships its own SketchUp extension (Studio Live Sync) that owns the viewport
@@ -146,7 +148,7 @@ Here are some examples of what you can ask Claude to do:
 ## Troubleshooting
 
 * **Connection issues**: Make sure the extension server is started
-  (Extensions > MCP Server > Máy chủ MCP, then Bật server). The MCP server
+  (Extensions > Phanton Sketchup MCP > Máy chủ MCP, then Bật server). The MCP server
   reconnects on its own.
 * **Command failures**: Run SketchUp with `SKETCHUP_MCP_DEBUG=1` and read the
   Ruby Console.

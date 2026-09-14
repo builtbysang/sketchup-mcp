@@ -2326,8 +2326,8 @@ module SU_MCP
     @server = Server.new
     @server.on_change = -> { SU_MCP.push(:server) }
 
-    menu    = UI.menu("Plugins").add_submenu("MCP Server")
-    toolbar = UI::Toolbar.new("MCP Server")
+    menu    = UI.menu("Plugins").add_submenu("Phanton Sketchup MCP")
+    toolbar = UI::Toolbar.new("Phanton Sketchup MCP")
 
     # One Command object per window, shared by the menu and the toolbar, so a
     # button can never show a different label than its menu item.
