@@ -15,7 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Secret scan of the tree
-        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 dir /repo --redact --no-banner
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 dir /repo --redact --no-banner --verbose
+  tests:
+    # macOS, where the server runs next to SketchUp: on Linux a closed port resets the connection
+    # instead of refusing it, so the "SketchUp not running" message test cannot pass there.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: Extension against the fake SketchUp API
         run: ruby tests/test_extension.rb
