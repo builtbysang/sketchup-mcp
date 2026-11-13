@@ -1,6 +1,5 @@
 # Checks that need nothing outside this repo. Agents merge a pull request on their own only when
-# every check here passed (the ship-gate hook in prism-harness, Chief 2026-11-01), so a check added
-# here must pass on a clean checkout.
+# every check here passed, so a check added here must pass on a clean checkout.
 name: check
 on:
   push:
